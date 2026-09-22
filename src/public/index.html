@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HookArmor - Webhook Dead-Letter Queue & Replay Sentinel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #090d16;
+      --bg-card: #0f172a;
+      --bg-card-hover: #1e293b;
+      --border: #1e293b;
+      --border-focus: #3b82f6;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #3b82f6;
+      --accent-blue-glow: rgba(59, 130, 246, 0.25);
+      --accent-emerald: #10b981;
+      --accent-rose: #f43f5e;
+      --accent-amber: #f59e0b;
+      --accent-purple: #8b5cf6;
+      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.7);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.25rem;
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+    }
+
+    .brand-text h1 {
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .brand-tag {
+      font-size: 0.65rem;
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--accent-blue);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 0.15rem 0.45rem;
+      border-radius: 9999px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.55rem 1rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+    }
+    .btn-primary:hover { background: #1d4ed8; }
+
+    .btn-danger {
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--accent-rose);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+    }
+    .btn-danger:hover { background: rgba(244, 63, 94, 0.25); }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--bg-card-hover); border-color: #475569; }
+
+    .btn-sm {
+      padding: 0.35rem 0.65rem;
+      font-size: 0.78rem;
+    }
+
+    main {
+      padding: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
+
+    /* Metric Grid */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .metric-title {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .metric-value {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .metric-value.emerald { color: var(--accent-emerald); }
+    .metric-value.rose { color: var(--accent-rose); }
+    .metric-value.blue { color: var(--accent-blue); }
+
+    /* Layout Sections */
+    .dashboard-content {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 1024px) {
+      .dashboard-content { grid-template-columns: 1fr; }
+    }
+
+    /* Sidebar Panels */
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+    }
+
+    .panel-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .form-group label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .form-control {
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.55rem 0.75rem;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .form-control:focus {
+      border-color: var(--border-focus);
+    }
+
+    .endpoint-item {
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .endpoint-name {
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .endpoint-url {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--accent-blue);
+      word-break: break-all;
+      background: rgba(59, 130, 246, 0.08);
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+    }
+
+    .target-url {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+
+    /* Event Stream Table */
+    .stream-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stream-toolbar {
+      padding: 1rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .stream-filter-tabs {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.4rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .tab-btn.active {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: var(--accent-blue);
+      color: var(--text-main);
+    }
+
+    .table-responsive {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+
+    th {
+      background: #090d16;
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tr:hover td {
+      background: rgba(30, 41, 59, 0.4);
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.2rem 0.55rem;
+      border-radius: 9999px;
+      text-transform: uppercase;
+    }
+
+    .badge-delivered {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-failed {
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--accent-rose);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+    }
+
+    .badge-pending {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-provider {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-weight: 600;
+      background: #1e293b;
+      color: #cbd5e1;
+    }
+    .badge-provider.stripe { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
+    .badge-provider.shopify { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .badge-provider.github { background: rgba(255, 255, 255, 0.1); color: #f1f5f9; }
+
+    .code-mono {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+    }
+
+    /* Modal / Inspector Drawer */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 800px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-body {
+      padding: 1.5rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .code-block {
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      overflow-x: auto;
+      max-height: 250px;
+      white-space: pre-wrap;
+      color: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <a href="/" class="brand">
+      <div class="brand-icon">🛡️</div>
+      <div class="brand-text">
+        <h1>HookArmor <span class="brand-tag">v1.0 Ready</span></h1>
+      </div>
+    </a>
+    <div class="nav-actions">
+      <button class="btn btn-secondary btn-sm" onclick="openSimulatorModal()">⚡ Test Simulator</button>
+      <button class="btn btn-danger btn-sm" id="replay-all-btn" onclick="replayAllFailed()">🔄 Replay All Dead-Letter</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Top Metrics -->
+    <div class="metric-grid">
+      <div class="metric-card">
+        <span class="metric-title">Total Ingested</span>
+        <span class="metric-value blue" id="metric-total">0</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-title">Delivered (2xx)</span>
+        <span class="metric-value emerald" id="metric-delivered">0</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-title">Dead-Letter Queue</span>
+        <span class="metric-value rose" id="metric-failed">0</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-title">Avg Latency</span>
+        <span class="metric-value" id="metric-latency">0 ms</span>
+      </div>
+    </div>
+
+    <!-- Main Grid -->
+    <div class="dashboard-content">
+      <!-- Left: Endpoints & Simulator Controls -->
+      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">🛡️ Registered Endpoints</span>
+            <button class="btn btn-secondary btn-sm" onclick="toggleNewEndpointForm()">+ New</button>
+          </div>
+
+          <div id="new-endpoint-form" style="display: none; flex-direction: column; gap: 0.75rem; background: #090d16; padding: 1rem; border-radius: 8px; border: 1px solid var(--border);">
+            <div class="form-group">
+              <label>Endpoint ID (slug)</label>
+              <input type="text" id="inp-ep-id" class="form-control" placeholder="stripe-production">
+            </div>
+            <div class="form-group">
+              <label>Display Name</label>
+              <input type="text" id="inp-ep-name" class="form-control" placeholder="Stripe Billing">
+            </div>
+            <div class="form-group">
+              <label>Target Destination URL</label>
+              <input type="text" id="inp-ep-target" class="form-control" placeholder="https://api.myco.com/webhooks/stripe">
+            </div>
+            <div class="form-group">
+              <label>Discord / Slack Alert Webhook</label>
+              <input type="text" id="inp-ep-alert" class="form-control" placeholder="https://discord.com/api/webhooks/...">
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="saveEndpoint()">Save Endpoint</button>
+          </div>
+
+          <div id="endpoints-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">⚙️ Mock Target Harness</span>
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">
+            Test failure scenarios locally. Configure the built-in mock endpoint to simulate server crashes or timeouts.
+          </p>
+          <div class="form-group">
+            <label>Mock Response Code</label>
+            <select id="mock-status-select" class="form-control" onchange="updateMockConfig()">
+              <option value="200">200 OK (Normal processing)</option>
+              <option value="500">500 Internal Server Error (Server crash)</option>
+              <option value="502">502 Bad Gateway (Zero-downtime deploy reboot)</option>
+              <option value="504">504 Gateway Timeout (Database connection pool full)</option>
+              <option value="429">429 Too Many Requests (Rate limited)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Real-time Live Event Log -->
+      <div class="stream-container">
+        <div class="stream-toolbar">
+          <div class="stream-filter-tabs">
+            <button class="tab-btn active" onclick="setFilter(null, this)">All Events</button>
+            <button class="tab-btn" onclick="setFilter('failed', this)">Dead-Letter (Failed)</button>
+            <button class="tab-btn" onclick="setFilter('delivered', this)">Delivered</button>
+          </div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);" id="live-indicator">
+            🟢 Live Ingestion Connected
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Provider / Event</th>
+                <th>Endpoint</th>
+                <th>Latency</th>
+                <th>Attempts</th>
+                <th>Time</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="events-table-body">
+              <tr>
+                <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 3rem;">
+                  No webhook events received yet. Click <strong>Test Simulator</strong> above to send a mock event!
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Modal Inspector Drawer -->
+  <div class="modal-backdrop" id="inspector-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modal-event-title">Event Inspection</h3>
+        <button class="btn btn-secondary btn-sm" onclick="closeInspectorModal()">✕</button>
+      </div>
+      <div class="modal-body" id="modal-event-body">
+        <!-- Filled by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Simulator Modal -->
+  <div class="modal-backdrop" id="simulator-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>⚡ Send Mock Webhook Test</h3>
+        <button class="btn btn-secondary btn-sm" onclick="closeSimulatorModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Select Target Endpoint</label>
+          <select id="sim-endpoint-select" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label>Template</label>
+          <select id="sim-template-select" class="form-control" onchange="applySimTemplate()">
+            <option value="stripe_payment">Stripe: invoice.payment_succeeded ($199.00)</option>
+            <option value="stripe_sub_created">Stripe: customer.subscription.created</option>
+            <option value="shopify_order">Shopify: orders/create ($89.50)</option>
+            <option value="github_push">GitHub: push (refs/heads/main)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Headers (JSON)</label>
+          <textarea id="sim-headers" class="form-control code-mono" style="height: 90px;"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Payload (JSON)</label>
+          <textarea id="sim-payload" class="form-control code-mono" style="height: 140px;"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="executeSimulation()">🚀 Send Mock Webhook</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentFilter = null;
+    let cachedEndpoints = [];
+    let ws = null;
+
+    const templates = {
+      stripe_payment: {
+        headers: {
+          'Content-Type': 'application/json',
+          'stripe-signature': 't=1758513000,v1=9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c'
+        },
+        payload: {
+          id: 'evt_test_payment_123',
+          object: 'event',
+          type: 'invoice.payment_succeeded',
+          data: {
+            object: {
+              id: 'in_1MockPaymentSucceeded',
+              amount_paid: 19900,
+              currency: 'usd',
+              customer_email: 'alex.founder@startup.io',
+              status: 'paid'
+            }
+          }
+        }
+      },
+      stripe_sub_created: {
+        headers: {
+          'Content-Type': 'application/json',
+          'stripe-signature': 't=1758513000,v1=aa11bb22cc33dd44ee55ff6677889900'
+        },
+        payload: {
+          id: 'evt_test_sub_456',
+          object: 'event',
+          type: 'customer.subscription.created',
+          data: {
+            object: {
+              id: 'sub_ProAnnual123',
+              plan: { id: 'pro_annual', amount: 99000 },
+              customer: 'cus_Alex101',
+              status: 'active'
+            }
+          }
+        }
+      },
+      shopify_order: {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-shopify-topic': 'orders/create',
+          'x-shopify-hmac-sha256': 'dGVzdF9zaG9waWZ5X2htYWNfc2hhMjU2'
+        },
+        payload: {
+          id: 82098291194,
+          email: 'customer@buyer.com',
+          total_price: '89.50',
+          currency: 'USD',
+          financial_status: 'paid'
+        }
+      },
+      github_push: {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-github-event': 'push'
+        },
+        payload: {
+          ref: 'refs/heads/main',
+          repository: { full_name: 'acme/backend' },
+          pusher: { name: 'devops-bot' }
+        }
+      }
+    };
+
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+        document.getElementById('metric-total').textContent = data.total;
+        document.getElementById('metric-delivered').textContent = data.delivered;
+        document.getElementById('metric-failed').textContent = data.failed;
+        document.getElementById('metric-latency').textContent = `${data.avgLatencyMs} ms`;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function loadEndpoints() {
+      try {
+        const res = await fetch('/api/endpoints');
+        cachedEndpoints = await res.json();
+        const container = document.getElementById('endpoints-list');
+        const simSelect = document.getElementById('sim-endpoint-select');
+
+        if (cachedEndpoints.length === 0) {
+          container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">No endpoints yet. Click "+ New" above to create one.</div>`;
+          simSelect.innerHTML = `<option value="">No endpoints</option>`;
+          return;
+        }
+
+        container.innerHTML = cachedEndpoints.map(ep => `
+          <div class="endpoint-item">
+            <div class="endpoint-name">${ep.name}</div>
+            <div class="endpoint-url" title="Ingress URL">${window.location.origin}/in/${ep.id}</div>
+            <div class="target-url">🎯 <strong>Target:</strong> ${ep.target_url}</div>
+            <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.75rem;">
+              <span>Auto-Retry: <strong>${ep.auto_retry ? 'Yes' : 'No'}</strong></span>
+              <span>Max: <strong>${ep.max_retries} attempts</strong></span>
+            </div>
+          </div>
+        `).join('');
+
+        simSelect.innerHTML = cachedEndpoints.map(ep => `
+          <option value="${ep.id}">${ep.name} (/in/${ep.id})</option>
+        `).join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function loadEvents() {
+      try {
+        let url = '/api/events?limit=50';
+        if (currentFilter) url += `&status=${currentFilter}`;
+        const res = await fetch(url);
+        const events = await res.json();
+        const tbody = document.getElementById('events-table-body');
+
+        if (events.length === 0) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 3rem;">
+                No matching events found in Dead-Letter Queue.
+              </td>
+            </tr>
+          `;
+          return;
+        }
+
+        tbody.innerHTML = events.map(evt => {
+          const badgeClass = evt.status === 'delivered' ? 'badge-delivered' : (evt.status === 'failed' ? 'badge-failed' : 'badge-pending');
+          const time = new Date(evt.created_at).toLocaleTimeString();
+          const latency = evt.last_latency_ms ? `${evt.last_latency_ms}ms` : '-';
+          const providerClass = evt.provider.includes('stripe') ? 'stripe' : (evt.provider.includes('shopify') ? 'shopify' : (evt.provider.includes('github') ? 'github' : ''));
+
+          return `
+            <tr>
+              <td><span class="badge ${badgeClass}">${evt.status}</span></td>
+              <td>
+                <span class="badge-provider ${providerClass}">${evt.provider}</span>
+                <span style="font-weight: 600; margin-left: 0.35rem;">${evt.event_type || evt.id}</span>
+              </td>
+              <td><span class="code-mono" style="color: var(--text-muted);">${evt.endpoint_id}</span></td>
+              <td><span class="code-mono">${latency}</span></td>
+              <td><span class="code-mono">${evt.attempts}</span></td>
+              <td style="color: var(--text-muted);">${time}</td>
+              <td style="display: flex; gap: 0.5rem;">
+                <button class="btn btn-secondary btn-sm" onclick="inspectEvent('${evt.id}')">Inspect</button>
+                <button class="btn btn-primary btn-sm" onclick="replayEvent('${evt.id}')">Replay</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function setFilter(status, btn) {
+      currentFilter = status;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadEvents();
+    }
+
+    function toggleNewEndpointForm() {
+      const f = document.getElementById('new-endpoint-form');
+      f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+    }
+
+    async function saveEndpoint() {
+      const id = document.getElementById('inp-ep-id').value.trim();
+      const name = document.getElementById('inp-ep-name').value.trim();
+      const targetUrl = document.getElementById('inp-ep-target').value.trim();
+      const alertWebhookUrl = document.getElementById('inp-ep-alert').value.trim();
+
+      if (!id || !name || !targetUrl) {
+        alert('Please fill out ID, Name, and Target URL');
+        return;
+      }
+
+      await fetch('/api/endpoints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name, targetUrl, alertWebhookUrl, autoRetry: 1, maxRetries: 5 })
+      });
+
+      toggleNewEndpointForm();
+      await loadEndpoints();
+    }
+
+    async function replayEvent(id) {
+      try {
+        const res = await fetch(`/api/events/${id}/replay`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert(`✅ Event ${id} successfully replayed! (HTTP ${data.statusCode})`);
+        } else {
+          alert(`❌ Replay attempted: Destination returned HTTP ${data.statusCode} (${data.errorMessage || 'Failed'})`);
+        }
+        await loadEvents();
+        await loadStats();
+      } catch (e) {
+        alert('Replay failed: ' + e.message);
+      }
+    }
+
+    async function replayAllFailed() {
+      if (!confirm('Replay all failed Dead-Letter Queue events now?')) return;
+      try {
+        const res = await fetch('/api/events/replay-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        const data = await res.json();
+        alert(`🔄 Dispatched replay for ${data.replayedCount} dead-letter events.`);
+        await loadEvents();
+        await loadStats();
+      } catch (e) {
+        alert('Bulk replay error: ' + e.message);
+      }
+    }
+
+    async function inspectEvent(id) {
+      try {
+        const res = await fetch(`/api/events/${id}`);
+        const evt = await res.json();
+        document.getElementById('modal-event-title').textContent = `Inspection: ${evt.id}`;
+        
+        let attemptsHtml = '<p style="color: var(--text-muted); font-size: 0.85rem;">No attempts recorded.</p>';
+        if (evt.attempts && evt.attempts.length > 0) {
+          attemptsHtml = evt.attempts.map((att, i) => `
+            <div style="background: #090d16; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.8rem;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
+                <strong>Attempt #${evt.attempts.length - i}</strong>
+                <span class="badge ${att.status_code >= 200 && att.status_code < 300 ? 'badge-delivered' : 'badge-failed'}">
+                  HTTP ${att.status_code || 'Err'} (${att.latency_ms}ms)
+                </span>
+              </div>
+              <div style="color: var(--text-muted);">${att.attempted_at}</div>
+              ${att.error_message ? `<div style="color: var(--accent-rose); margin-top: 0.25rem;">${att.error_message}</div>` : ''}
+              ${att.response_body ? `<div class="code-block" style="margin-top: 0.5rem; max-height: 120px;">${att.response_body}</div>` : ''}
+            </div>
+          `).join('');
+        }
+
+        document.getElementById('modal-event-body').innerHTML = `
+          <div style="display: flex; gap: 1rem; align-items: center;">
+            <span class="badge ${evt.status === 'delivered' ? 'badge-delivered' : 'badge-failed'}">${evt.status}</span>
+            <span style="font-weight: 700;">${evt.event_type || 'Custom Payload'}</span>
+            <span style="color: var(--text-muted); font-size: 0.8rem;">Received: ${evt.created_at}</span>
+          </div>
+
+          <div>
+            <h4 style="font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--text-muted);">Incoming Headers</h4>
+            <div class="code-block">${JSON.stringify(evt.headers, null, 2)}</div>
+          </div>
+
+          <div>
+            <h4 style="font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--text-muted);">Raw Body Payload</h4>
+            <div class="code-block">${evt.raw_body}</div>
+          </div>
+
+          <div>
+            <h4 style="font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--text-muted);">Delivery Attempt History</h4>
+            <div style="display: flex; flex-direction: column; gap: 0.5rem;">${attemptsHtml}</div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+            <button class="btn btn-secondary" onclick="closeInspectorModal()">Close</button>
+            <button class="btn btn-primary" onclick="replayEvent('${evt.id}')">Replay Event</button>
+          </div>
+        `;
+        document.getElementById('inspector-modal').style.display = 'flex';
+      } catch (e) {
+        alert('Inspection error: ' + e.message);
+      }
+    }
+
+    function closeInspectorModal() {
+      document.getElementById('inspector-modal').style.display = 'none';
+    }
+
+    function openSimulatorModal() {
+      applySimTemplate();
+      document.getElementById('simulator-modal').style.display = 'flex';
+    }
+
+    function closeSimulatorModal() {
+      document.getElementById('simulator-modal').style.display = 'none';
+    }
+
+    function applySimTemplate() {
+      const tmplKey = document.getElementById('sim-template-select').value;
+      const tmpl = templates[tmplKey];
+      if (tmpl) {
+        document.getElementById('sim-headers').value = JSON.stringify(tmpl.headers, null, 2);
+        document.getElementById('sim-payload').value = JSON.stringify(tmpl.payload, null, 2);
+      }
+    }
+
+    async function executeSimulation() {
+      const epId = document.getElementById('sim-endpoint-select').value;
+      if (!epId) {
+        alert('No endpoint selected!');
+        return;
+      }
+
+      let headers = {};
+      try {
+        headers = JSON.parse(document.getElementById('sim-headers').value);
+      } catch (e) {
+        alert('Invalid JSON headers');
+        return;
+      }
+
+      const payloadStr = document.getElementById('sim-payload').value;
+
+      try {
+        const res = await fetch(`/in/${epId}`, {
+          method: 'POST',
+          headers,
+          body: payloadStr
+        });
+        const data = await res.json();
+        closeSimulatorModal();
+        setTimeout(async () => {
+          await loadStats();
+          await loadEvents();
+        }, 300);
+      } catch (e) {
+        alert('Simulation failed: ' + e.message);
+      }
+    }
+
+    async function updateMockConfig() {
+      const statusCode = parseInt(document.getElementById('mock-status-select').value, 10);
+      await fetch('/mock/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ statusCode })
+      });
+    }
+
+    function initWebSocket() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'event:received' || msg.type === 'delivery') {
+          loadStats();
+          loadEvents();
+        }
+      };
+      ws.onclose = () => {
+        setTimeout(initWebSocket, 2000);
+      };
+    }
+
+    // Startup
+    window.addEventListener('DOMContentLoaded', async () => {
+      await loadEndpoints();
+      await loadStats();
+      await loadEvents();
+      initWebSocket();
+      setInterval(loadStats, 10000);
+    });
+  </script>
+</body>
+</html>
