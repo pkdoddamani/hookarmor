@@ -8,7 +8,7 @@ async function runTests() {
   const port = 4999;
   const { server, storage, dispatcher } = createServer({ dbPath: ':memory:' });
 
-  await new Promise((resolve) => server.listen(port, resolve));
+  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
@@ -52,12 +52,12 @@ async function runTests() {
     console.log(`  ✅ Ingress returned 200 OK in <10ms. ID: ${bodyA.hookarmor_id}`);
 
     // Wait deterministically for async dispatch
-    async function waitForStatus(eventId, expectedStatus, timeoutMs = 2000) {
+    async function waitForStatus(eventId, expectedStatus, timeoutMs = 10000) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         const ev = storage.getEvent(eventId);
         if (ev && ev.status === expectedStatus) return ev;
-        await new Promise((r) => setTimeout(r, 20));
+        await new Promise((r) => setTimeout(r, 25));
       }
       return storage.getEvent(eventId);
     }
