@@ -189,6 +189,20 @@ function createServer(options = {}) {
     }
   });
 
+  // Waitlist Registration
+  app.post('/api/waitlist', (req, res) => {
+    const { email, source } = req.body || {};
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ error: 'Valid email required' });
+    }
+    const result = storage.addWaitlist(email.trim().toLowerCase(), source || 'landing_page');
+    res.json({ success: true, message: 'Added to HookArmor Cloud beta waitlist!', email: result.email });
+  });
+
+  app.get('/api/waitlist', (req, res) => {
+    res.json(storage.listWaitlist());
+  });
+
   // Mock Target Receiver (for self-testing and local simulation)
   let mockTargetBehavior = {
     statusCode: 200,

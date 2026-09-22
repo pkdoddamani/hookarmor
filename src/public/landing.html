@@ -303,7 +303,7 @@
     </a>
     <div class="nav-cta">
       <a href="#pricing" class="btn btn-outline">Pricing</a>
-      <a href="https://github.com/ishan-1010/hookarmor" class="btn btn-primary">Get HookArmor</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" class="btn btn-primary" target="_blank">Star on GitHub ⭐</a>
     </div>
   </nav>
 
@@ -314,16 +314,49 @@
       Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay engine.
     </p>
 
+    <!-- Waitlist Capture Form -->
+    <div style="margin-top: 1.5rem; width: 100%; max-width: 480px;">
+      <form id="waitlist-form" onsubmit="handleWaitlist(event)" style="display: flex; gap: 0.5rem; background: #0d1322; border: 1px solid var(--border); padding: 0.4rem; border-radius: 10px;">
+        <input type="email" id="waitlist-email" placeholder="Enter your work email for Cloud Beta..." required style="flex: 1; background: transparent; border: none; padding: 0.6rem 0.8rem; color: white; outline: none; font-size: 0.9rem;">
+        <button type="submit" class="btn btn-primary" style="padding: 0.6rem 1.2rem; font-size: 0.85rem;">Join Cloud Beta</button>
+      </form>
+      <div id="waitlist-msg" style="font-size: 0.8rem; margin-top: 0.5rem; display: none;"></div>
+    </div>
+
     <div class="terminal-box">
       <span>$ npx hookarmor start</span>
       <button class="copy-btn" onclick="navigator.clipboard.writeText('npx hookarmor start')">Copy</button>
     </div>
 
     <div class="hero-actions">
-      <a href="#pricing" class="btn btn-primary">Start Protecting Webhooks Free</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" class="btn btn-primary">Download Free on GitHub</a>
       <a href="#features" class="btn btn-outline">How HookArmor Works</a>
     </div>
   </header>
+
+  <script>
+    async function handleWaitlist(e) {
+      e.preventDefault();
+      const email = document.getElementById('waitlist-email').value;
+      const msg = document.getElementById('waitlist-msg');
+      try {
+        const res = await fetch('/api/waitlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, source: 'hero_landing' })
+        });
+        const data = await res.json();
+        msg.style.display = 'block';
+        msg.style.color = '#10b981';
+        msg.textContent = '🎉 You are on the waitlist! We will reach out with early access.';
+        document.getElementById('waitlist-email').value = '';
+      } catch (err) {
+        msg.style.display = 'block';
+        msg.style.color = '#f43f5e';
+        msg.textContent = 'Could not join waitlist right now. Please try again.';
+      }
+    }
+  </script>
 
   <section class="section" id="features">
     <div class="section-title">

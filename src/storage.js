@@ -57,6 +57,13 @@ class Storage {
         FOREIGN KEY (event_id) REFERENCES events(id)
       );
 
+      CREATE TABLE IF NOT EXISTS waitlist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        source TEXT DEFAULT 'website',
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
       CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
       CREATE INDEX IF NOT EXISTS idx_events_endpoint ON events(endpoint_id);
     `);
@@ -190,6 +197,20 @@ class Storage {
       ...r,
       headers: JSON.parse(r.headers)
     }));
+  }
+
+  addWaitlist(email, source = 'website') {
+    const stmt = this.db.prepare(`
+      INSERT INTO waitlist (email, source, created_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(email) DO UPDATE SET created_at = datetime('now')
+    `);
+    stmt.run(email, source);
+    return { email, source, status: 'registered' };
+  }
+
+  listWaitlist() {
+    return this.db.prepare('SELECT * FROM waitlist ORDER BY created_at DESC').all();
   }
 }
 
