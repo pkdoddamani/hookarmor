@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: hookarmor
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: 4000
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: hookarmor-data
+      mountPath: /app/data
+      sizeGB: 1

@@ -59,7 +59,25 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 
 ## 🚀 Quickstart
 
-### 1. Start Server & Web Dashboard
+### 1-Click Cloud Deployment (Free & Self-Hosted)
+
+Deploy your own private, persistent HookArmor instance to the cloud with one click:
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template?template=https://github.com/pkdoddamani/hookarmor)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/pkdoddamani/hookarmor)
+
+---
+
+### Local Quickstart
+
+#### Option A: Docker Compose (Zero Config)
+```bash
+git clone https://github.com/pkdoddamani/hookarmor.git
+cd hookarmor
+docker compose up -d
+```
+
+#### Option B: Terminal CLI
 ```bash
 npx hookarmor start
 ```
