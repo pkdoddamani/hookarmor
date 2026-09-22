@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  hookarmor:
+    build: .
+    container_name: hookarmor
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - hookarmor_data:/app/data
+    environment:
+      - PORT=4000
+      - NODE_ENV=production
+
+volumes:
+  hookarmor_data:
