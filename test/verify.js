@@ -51,10 +51,18 @@ async function runTests() {
     assert.ok(bodyA.hookarmor_id, 'Should return hookarmor_id');
     console.log(`  ✅ Ingress returned 200 OK in <10ms. ID: ${bodyA.hookarmor_id}`);
 
-    // Wait for async dispatch
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait deterministically for async dispatch
+    async function waitForStatus(eventId, expectedStatus, timeoutMs = 2000) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const ev = storage.getEvent(eventId);
+        if (ev && ev.status === expectedStatus) return ev;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return storage.getEvent(eventId);
+    }
 
-    const eventA = storage.getEvent(bodyA.hookarmor_id);
+    const eventA = await waitForStatus(bodyA.hookarmor_id, 'delivered');
     assert.strictEqual(eventA.status, 'delivered', 'Event should be marked delivered');
     assert.strictEqual(eventA.last_status_code, 200);
     assert.strictEqual(eventA.provider, 'stripe');
@@ -85,9 +93,7 @@ async function runTests() {
     assert.strictEqual(resB.status, 200, 'Ingress must STILL return 200 OK so Stripe never drops event');
     const bodyB = await resB.json();
 
-    await new Promise((r) => setTimeout(r, 200));
-
-    const eventB = storage.getEvent(bodyB.hookarmor_id);
+    const eventB = await waitForStatus(bodyB.hookarmor_id, 'failed');
     assert.strictEqual(eventB.status, 'failed', 'Event should be marked failed in Dead-Letter Queue');
     assert.strictEqual(eventB.last_status_code, 500);
     console.log(`  ✅ Event ${bodyB.hookarmor_id} safely quarantined in Dead-Letter Queue with HTTP 500 status.`);
