@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HookArmor - Never Lose a Stripe or Shopify Webhook Again</title>
+  <meta name="description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), Ingress Proxy, and 1-Click Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #070a12;
+      --bg-card: #0d1322;
+      --border: #1e293b;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.25);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --emerald: #10b981;
+      --rose: #f43f5e;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+    nav {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1.5rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: white;
+      text-decoration: none;
+    }
+    .badge-v1 {
+      font-size: 0.65rem;
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+      font-weight: 700;
+    }
+    .nav-cta {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.65rem 1.25rem;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+      box-shadow: 0 4px 20px rgba(37, 99, 235, 0.4);
+    }
+    .btn-primary:hover { background: #1d4ed8; transform: translateY(-1px); }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-outline:hover { background: var(--bg-card); border-color: #475569; }
+
+    /* Hero */
+    .hero {
+      max-width: 1100px;
+      margin: 4rem auto 2rem;
+      padding: 0 2rem;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--emerald);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: clamp(2.5rem, 5vw, 4.2rem);
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #60a5fa 0%, #a855f7 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero p {
+      font-size: 1.2rem;
+      color: var(--text-muted);
+      max-width: 720px;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* Terminal Quickstart */
+    .terminal-box {
+      background: #00040a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.75rem;
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      color: #38bdf8;
+      margin-top: 1.5rem;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+    }
+    .copy-btn {
+      background: #1e293b;
+      border: none;
+      color: #94a3b8;
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .copy-btn:hover { color: white; background: #334155; }
+
+    /* Pain & Feature Section */
+    .section {
+      max-width: 1200px;
+      margin: 6rem auto;
+      padding: 0 2rem;
+    }
+    .section-title {
+      text-align: center;
+      margin-bottom: 3.5rem;
+    }
+    .section-title h2 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .section-title p {
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .card-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+    }
+    .card h3 {
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+    .card p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* Comparison Table */
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 2rem;
+      font-size: 0.9rem;
+    }
+    .comparison-table th, .comparison-table td {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    .comparison-table th {
+      background: #090e1a;
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+
+    /* Pricing Section */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+    .pricing-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      position: relative;
+    }
+    .pricing-card.featured {
+      border-color: var(--accent);
+      box-shadow: 0 0 30px rgba(59, 130, 246, 0.2);
+    }
+    .featured-badge {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #2563eb;
+      color: white;
+      padding: 0.2rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+    .price {
+      font-size: 2.5rem;
+      font-weight: 800;
+    }
+    .price span {
+      font-size: 1rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .feature-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      font-size: 0.9rem;
+    }
+    .feature-list li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: #cbd5e1;
+    }
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 3rem 2rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-top: 6rem;
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <a href="#" class="logo">
+      <span>🛡️</span> HookArmor <span class="badge-v1">v1.0 Production</span>
+    </a>
+    <div class="nav-cta">
+      <a href="#pricing" class="btn btn-outline">Pricing</a>
+      <a href="https://github.com/ishan-1010/hookarmor" class="btn btn-primary">Get HookArmor</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="pill">⚡ Tested & Verified Across 5 Failover Scenarios</div>
+    <h1>Never Lose a <span class="gradient-text">Stripe or Shopify</span> Webhook Again.</h1>
+    <p>
+      Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay engine.
+    </p>
+
+    <div class="terminal-box">
+      <span>$ npx hookarmor start</span>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('npx hookarmor start')">Copy</button>
+    </div>
+
+    <div class="hero-actions">
+      <a href="#pricing" class="btn btn-primary">Start Protecting Webhooks Free</a>
+      <a href="#features" class="btn btn-outline">How HookArmor Works</a>
+    </div>
+  </header>
+
+  <section class="section" id="features">
+    <div class="section-title">
+      <h2>Built for Developers Tired of Silent Revenue Loss</h2>
+      <p>A drop-in proxy that protects your business from the harsh realities of production infrastructure.</p>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-icon" style="background: rgba(59, 130, 246, 0.1); color: #60a5fa;">⚡</div>
+        <h3>Sub-10ms Ingress Buffer</h3>
+        <p>
+          Returns an instant <code>200 OK</code> to Stripe, Shopify, or Clerk immediately upon receipt. Payment gateways never enter backoff retry purgatory or mark endpoints dead.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background: rgba(244, 63, 94, 0.1); color: #f43f5e;">💀</div>
+        <h3>Durable Dead-Letter Queue</h3>
+        <p>
+          If your backend responds 500, 502, 504, 429, or times out, the exact raw body and headers are safely quarantined in SQLite with complete error diagnostic traces.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background: rgba(16, 185, 129, 0.1); color: #34d399;">🔄</div>
+        <h3>1-Click Bulk Replay</h3>
+        <p>
+          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> in the dashboard or run <code>npx hookarmor replay --failed</code> to restore customer subscriptions in 2 seconds.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background: rgba(168, 85, 247, 0.1); color: #c084fc;">🔐</div>
+        <h3>HMAC Signature Passthrough</h3>
+        <p>
+          Preserves exact raw bytes and cryptographic signature headers (<code>stripe-signature</code>, <code>x-shopify-hmac-sha256</code>) so downstream security checks never break.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background: rgba(245, 158, 11, 0.1); color: #fbbf24;">🚨</div>
+        <h3>Discord & Slack Webhooks</h3>
+        <p>
+          Get notified within 1 second of an endpoint failure with the event ID, HTTP status code, and error body delivered directly to your engineering channel.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background: rgba(56, 189, 248, 0.1); color: #38bdf8;">💻</div>
+        <h3>Zero-Friction Local Tunnel</h3>
+        <p>
+          Run <code>npx hookarmor listen http://localhost:3000/api/webhook</code> to test production events against your local IDE with hot reloading and zero ngrok hassles.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="pricing">
+    <div class="section-title">
+      <h2>Simple, Predictable Developer Pricing</h2>
+      <p>No usage shock. No complex JSON configuration bills. Open core forever.</p>
+    </div>
+
+    <div class="pricing-grid">
+      <div class="pricing-card">
+        <h3>Self-Hosted</h3>
+        <div class="price">$0 <span>/ forever</span></div>
+        <p style="color: var(--text-muted); font-size: 0.85rem;">Open source CLI & engine for local dev and self-hosting.</p>
+        <ul class="feature-list">
+          <li>✓ Full SQLite DLQ & Ingress Engine</li>
+          <li>✓ Web Dashboard & Inspector</li>
+          <li>✓ Terminal CLI runner</li>
+          <li>✓ Local Dev Tunneling</li>
+          <li>✓ Community Support</li>
+        </ul>
+        <a href="https://github.com/ishan-1010/hookarmor" class="btn btn-outline" style="margin-top: auto;">Download on GitHub</a>
+      </div>
+
+      <div class="pricing-card featured">
+        <div class="featured-badge">MOST POPULAR</div>
+        <h3>Starter Cloud</h3>
+        <div class="price">$29 <span>/ month</span></div>
+        <p style="color: var(--text-muted); font-size: 0.85rem;">For growing B2B SaaS apps and indie founders.</p>
+        <ul class="feature-list">
+          <li>✓ <strong>50,000 events / month</strong></li>
+          <li>✓ <strong>30-day retention</strong> in DLQ</li>
+          <li>✓ 5 Webhook Endpoints</li>
+          <li>✓ Instant Discord & Slack Alerts</li>
+          <li>✓ Automatic Exponential Retries</li>
+          <li>✓ 1-Click UI & API Replay</li>
+        </ul>
+        <a href="#" class="btn btn-primary" style="margin-top: auto;">Get Started</a>
+      </div>
+
+      <div class="pricing-card">
+        <h3>Scale Cloud</h3>
+        <div class="price">$79 <span>/ month</span></div>
+        <p style="color: var(--text-muted); font-size: 0.85rem;">For high-volume e-commerce and scale-ups.</p>
+        <ul class="feature-list">
+          <li>✓ <strong>250,000 events / month</strong></li>
+          <li>✓ <strong>90-day retention</strong> in DLQ</li>
+          <li>✓ Unlimited Endpoints</li>
+          <li>✓ Automated Circuit Breakers</li>
+          <li>✓ Multi-team Access</li>
+          <li>✓ Priority Global Ingress Edge</li>
+        </ul>
+        <a href="#" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>© 2026 HookArmor. MIT Licensed Open Source Core. Built for developers who refuse to lose payments.</p>
+  </footer>
+
+</body>
+</html>
