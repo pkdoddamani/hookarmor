@@ -50,24 +50,29 @@ function createServer(options = {}) {
     const rawBody = rawBodyBuffer.toString('utf8');
     const headers = { ...req.headers };
 
-    // Detect provider
+    // Detect provider & idempotency key
     let provider = 'generic';
     let eventType = null;
+    let idempotencyKey = headers['idempotency-key'] || headers['x-idempotency-key'] || null;
 
     if (headers['stripe-signature']) {
       provider = 'stripe';
       try {
         const parsed = JSON.parse(rawBody);
         eventType = parsed.type;
+        if (parsed.id) idempotencyKey = parsed.id;
       } catch (e) {}
     } else if (headers['x-shopify-hmac-sha256'] || headers['x-shopify-topic']) {
       provider = 'shopify';
       eventType = headers['x-shopify-topic'];
+      if (headers['x-shopify-webhook-id']) idempotencyKey = headers['x-shopify-webhook-id'];
     } else if (headers['x-github-event']) {
       provider = 'github';
       eventType = headers['x-github-event'];
+      if (headers['x-github-delivery']) idempotencyKey = headers['x-github-delivery'];
     } else if (headers['clerk-signature'] || headers['svix-id']) {
       provider = 'clerk/svix';
+      if (headers['svix-id']) idempotencyKey = headers['svix-id'];
       try {
         const parsed = JSON.parse(rawBody);
         eventType = parsed.type;
@@ -76,7 +81,21 @@ function createServer(options = {}) {
       try {
         const parsed = JSON.parse(rawBody);
         eventType = parsed.event || parsed.type || parsed.action || null;
+        if (parsed.id) idempotencyKey = String(parsed.id);
       } catch (e) {}
+    }
+
+    // Deduplication check: if this event ID was already delivered, ack immediately without duplicating downstream side effects
+    if (idempotencyKey) {
+      const existing = storage.findEventByIdempotencyKey(endpoint.id, idempotencyKey);
+      if (existing && existing.status === 'delivered') {
+        return res.status(200).json({
+          received: true,
+          hookarmor_id: existing.id,
+          status: 'deduplicated',
+          message: `Idempotency key ${idempotencyKey} already delivered. Suppressed duplicate execution.`
+        });
+      }
     }
 
     const eventId = `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -85,6 +104,7 @@ function createServer(options = {}) {
     const savedEvent = storage.saveEvent({
       id: eventId,
       endpointId: endpoint.id,
+      idempotencyKey,
       provider,
       eventType,
       headers,

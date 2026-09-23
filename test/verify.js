@@ -126,7 +126,40 @@ async function runTests() {
     assert.strictEqual(stats.failed, 0);
     console.log(`  ✅ Metrics verified: Total=${stats.total}, Delivered=${stats.delivered}, Dead-Letter=${stats.failed}, AvgLatency=${stats.avgLatencyMs}ms\n`);
 
-    console.log('🎉 ALL 5 HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!\n');
+    // 6. Scenario E: Idempotency Key Deduplication
+    console.log('Test 6: Testing idempotency key deduplication (duplicate delivered event suppressed)...');
+    const dedupPayload = JSON.stringify({
+      id: 'evt_stripe_idempotency_1',
+      type: 'customer.subscription.updated',
+      data: { status: 'active' }
+    });
+
+    const resFirst = await fetch(`${baseUrl}/in/stripe-live`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': 't=1758513000,v1=abcdef'
+      },
+      body: dedupPayload
+    });
+    const firstBody = await resFirst.json();
+    await waitForStatus(firstBody.hookarmor_id, 'delivered');
+
+    // Send identical event again
+    const resSecond = await fetch(`${baseUrl}/in/stripe-live`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': 't=1758513000,v1=abcdef'
+      },
+      body: dedupPayload
+    });
+    const secondBody = await resSecond.json();
+    assert.strictEqual(secondBody.status, 'deduplicated', 'Delivered event should be deduplicated');
+    assert.strictEqual(secondBody.hookarmor_id, firstBody.hookarmor_id);
+    console.log('  ✅ Duplicate event successfully intercepted and suppressed without duplicate delivery.\n');
+
+    console.log('🎉 ALL 6 HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!\n');
   } finally {
     server.close();
   }

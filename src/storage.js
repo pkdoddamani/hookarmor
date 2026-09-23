@@ -31,6 +31,7 @@ class Storage {
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
         endpoint_id TEXT NOT NULL,
+        idempotency_key TEXT,
         provider TEXT DEFAULT 'generic',
         event_type TEXT,
         headers TEXT NOT NULL,
@@ -66,6 +67,7 @@ class Storage {
 
       CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
       CREATE INDEX IF NOT EXISTS idx_events_endpoint ON events(endpoint_id);
+      CREATE INDEX IF NOT EXISTS idx_events_idempotency ON events(endpoint_id, idempotency_key);
     `);
   }
 
@@ -86,14 +88,22 @@ class Storage {
     return this.db.prepare('SELECT * FROM endpoints ORDER BY created_at DESC').all();
   }
 
-  saveEvent({ id, endpointId, provider, eventType, headers, rawBody, status = 'pending' }) {
+  findEventByIdempotencyKey(endpointId, idempotencyKey) {
+    if (!idempotencyKey) return null;
+    const row = this.db.prepare('SELECT * FROM events WHERE endpoint_id = ? AND idempotency_key = ?').get(endpointId, idempotencyKey);
+    if (!row) return null;
+    return { ...row, headers: JSON.parse(row.headers) };
+  }
+
+  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending' }) {
     const stmt = this.db.prepare(`
-      INSERT INTO events (id, endpoint_id, provider, event_type, headers, raw_body, status, attempts, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
     `);
     stmt.run(
       id,
       endpointId,
+      idempotencyKey,
       provider,
       eventType,
       JSON.stringify(headers),
@@ -192,6 +202,7 @@ class Storage {
       sql += ' AND e.endpoint_id = ?';
       params.push(endpointId);
     }
+    sql += ' ORDER BY e.created_at ASC';
     const rows = this.db.prepare(sql).all(...params);
     return rows.map(r => ({
       ...r,
