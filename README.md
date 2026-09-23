@@ -3,7 +3,7 @@
 > **Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-5%20Passing-brightgreen.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-7%20Passing-brightgreen.svg)]()
 [![Status: Production Ready](https://img.shields.io/badge/Status-v1.0.0-blueviolet.svg)]()
 
 ---
@@ -102,45 +102,70 @@ npx hookarmor replay evt_1758513516086_m8r0e7
 
 ## 📊 Verification Test Suite
 
-HookArmor includes a 5-scenario automated verification test suite:
+HookArmor includes a 7-scenario automated verification test suite covering edge cases, replay re-signing, and pool protection:
 ```bash
 npm test
 ```
 ```
-🧪 Starting HookArmor End-to-End Verification Test Suite...
+🧪 Starting HookArmor Hardened Verification Test Suite (Post-Audit)...
 
-Test 1: Creating endpoint "stripe-live"...
-  ✅ Endpoint created successfully.
+Test 1: Testing SSRF Protection & Endpoint Creation...
+  ✅ SSRF probe against 169.254.169.254 successfully blocked.
+  ✅ Valid endpoint created with secret.
 
-Test 2: Ingesting Stripe webhook with healthy destination (200 OK)...
-  ✅ Ingress returned 200 OK in <10ms.
-  ✅ Dispatcher successfully relayed payload and verified 200 response.
+Test 2: Testing Ingress Signature Verification (Security Boundary)...
+  ✅ Forged signature rejected with 400 Bad Request.
+  ✅ Authentic signature verified, ingested, and delivered.
 
-Test 3: Simulating downstream crash (500 Internal Server Error)...
-  ✅ Event safely quarantined in Dead-Letter Queue with HTTP 500 status.
-  ✅ Next retry scheduled with exponential backoff.
+Test 3: Testing 5-Minute Expiration Defeat (Fresh Outbound Re-Signing)...
+  ✅ HookArmor defeated the 5-minute Stripe expiration trap:
+     Stored in DB: t=1600000000 (Expired 5+ years ago)
+     Re-signed on replay: t=1790143178 (Current) -> stripe.webhooks.constructEvent succeeds!
 
-Test 4: Simulating server recovery (200 OK) and triggering Dead-Letter Replay...
-  ✅ Dead-letter event successfully replayed! Status is now: delivered (Attempts: 2)
+Test 4: Simulating Downstream Failure (500) -> Dead-Letter Queue...
+  ✅ Event safely quarantined in Dead-Letter Queue with HTTP 500.
+     Next automated retry scheduled with exponential backoff + jitter.
 
-Test 5: Verifying aggregate metrics endpoint...
-  ✅ Metrics verified: Total=2, Delivered=2, Dead-Letter=0, AvgLatency=8ms
+Test 5: Testing Background Retry Worker (Automatic Self-Healing)...
+  ✅ Background Retry Worker automatically claimed and delivered DLQ event! (Attempts: 2)
 
-🎉 ALL 5 HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!
+Test 6: Testing Concurrency Limiting (Pool Protection)...
+  ✅ Concurrency capped at max 2 parallel in-flight connections (pool protected).
+
+Test 7: Testing Safe Idempotency Key Deduplication...
+  ✅ Duplicate event intercepted and suppressed cleanly.
+
+🎉 ALL 7 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!
 ```
 
 ---
 
-## 💰 Monetization & The \$1M Valuation Target
+## 🔒 Defeating the 5-Minute Stripe Signature Expiration Trap
 
-* **Self-Hosted Open Source**: Free forever.
-* **Starter Cloud (\$29/mo)**: 50k events/mo, 30-day retention, 5 endpoints, Slack & Discord alerts.
-* **Scale Cloud (\$79/mo)**: 250k events/mo, 90-day retention, unlimited endpoints, automated circuit breakers.
-* **Business Cloud (\$199/mo)**: 1M events/mo, custom domain (`webhooks.yourdomain.com`), 1-year audit logs.
+Stripe's official SDK (`stripe.webhooks.constructEvent()`) enforces a strict 300-second (5-minute) tolerance on the `Stripe-Signature` timestamp `t=`.
 
-**To reach \$1,000,000 valuation** (at 8x ARR software multiple):
-* Target ARR: **\$125,000** (\$10,400 MRR).
-* Customer requirement: **~200 paying accounts** across a global addressable market of >2,000,000 companies receiving Stripe/Shopify webhooks.
+If you retry a failed webhook 15 minutes later, or replay a dead-letter event tomorrow, **standard Stripe handlers will throw `Webhook signature verification failed`**.
+
+HookArmor solves this automatically:
+1. **Ingress verification**: Validates the signature at ingress using your webhook signing secret (preventing unauthorized payloads).
+2. **Fresh re-signing on forward & replay**: When HookArmor delivers or replays the event, it re-signs the outbound payload using your secret with a current epoch timestamp `t=now`.
+3. **Zero code changes**: Your existing backend handler code remains completely untouched and verifies 100% of the time.
+
+---
+
+## 📦 Hosted Cloud & Self-Hosting
+
+| Feature | Self-Hosted (MIT) | Hosted Cloud Starter ($29/mo) | Hosted Cloud Pro ($79/mo) |
+|---|---|---|---|
+| **Ingress Proxy & Buffer** | Unlimited | 50,000 events/mo | 500,000 events/mo |
+| **Instant 200 OK Ack** | Yes (<10ms) | Yes (<10ms) | Yes (<10ms) |
+| **Dead-Letter Queue (DLQ)** | Yes | Yes | Yes |
+| **Stripe Signature Re-Signing** | Yes | Yes | Yes |
+| **Background Auto-Retries** | Yes | Yes | Yes |
+| **Concurrency Pool Limiter** | Yes | Yes | Yes |
+| **Event Retention** | Local Disk | 30 days | 90 days |
+| **Alerting** | Discord / Slack Webhook | Discord / Slack Webhook | Priority alerts + PagerDuty |
+| **Infrastructure** | Your own server | Fully managed & redundant | Fully managed & redundant |
 
 ---
 
