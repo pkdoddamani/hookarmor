@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HookArmor Engineering Blog - Webhook Reliability & Architecture</title>
+  <meta name="description" content="Deep technical teardowns on webhook reliability, Stripe signature verification edge cases, SQS deduplication pitfalls, and serverless crash recovery.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #070a12;
+      --bg-card: #0d1322;
+      --border: #1e293b;
+      --accent: #3b82f6;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      padding: 0 1.5rem;
+    }
+    nav {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: white;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-left: 1.5rem;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    main {
+      max-width: 900px;
+      margin: 3rem auto;
+    }
+    .header-section {
+      margin-bottom: 3.5rem;
+    }
+    h1 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.75rem;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+    .post-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      transition: border-color 0.2s, transform 0.2s;
+      display: block;
+      text-decoration: none;
+      color: inherit;
+    }
+    .post-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+    .post-tag {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      display: inline-block;
+    }
+    .post-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      line-height: 1.3;
+    }
+    .post-summary {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 1.25rem;
+      line-height: 1.6;
+    }
+    .post-meta {
+      font-size: 0.8rem;
+      color: #64748b;
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">🛡️ HookArmor</a>
+    <div class="nav-links">
+      <a href="/">Product</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <div class="header-section">
+      <span class="post-tag">Engineering Notes</span>
+      <h1>Systems & Webhook Architecture</h1>
+      <p class="subtitle">Deep technical teardowns on Stripe signature mechanics, idempotency traps, and zero-loss distributed ingress.</p>
+    </div>
+
+    <a href="/blog/stripe-webhook-signature-verification-failed" class="post-card">
+      <span class="post-tag">Security & Webhooks</span>
+      <h2 class="post-title">Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)</h2>
+      <p class="post-summary">Why standard `stripe.webhooks.constructEvent()` throws "Timestamp outside the tolerance zone" on retried or replayed webhooks older than 300 seconds, and the cryptographic re-signing architecture required to solve it.</p>
+      <div class="post-meta">
+        <span>Sept 2026</span>
+        <span>•</span>
+        <span>6 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
+
+    <a href="/blog/sqs-webhook-deduplication-trap" class="post-card">
+      <span class="post-tag">Distributed Systems</span>
+      <h2 class="post-title">The SQS Deduplication Trap: Why Naive Webhook Queues Silently Drop Payment Retries</h2>
+      <p class="post-summary">Rolling your own SQS + Lambda webhook queue looks simple in 20 lines of code until database connection exhaustion or Lambda OOM crashes turn your unique constraint dedupe into a silent event incinerator.</p>
+      <div class="post-meta">
+        <span>Sept 2026</span>
+        <span>•</span>
+        <span>7 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
+  </main>
+</body>
+</html>

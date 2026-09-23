@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix) - HookArmor</title>
+  <meta name="description" content="Why stripe.webhooks.constructEvent throws 'Timestamp outside the tolerance zone' on replays older than 300s, and how to implement cryptographic re-signing to defeat it.">
+  <link rel="canonical" href="https://hookarmor.tech/blog/stripe-webhook-signature-verification-failed">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)",
+    "description": "An architectural teardown of Stripe's 300-second webhook signature tolerance and how cryptographic re-signing preserves security without breaking delayed replays.",
+    "author": {
+      "@type": "Organization",
+      "name": "HookArmor"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "HookArmor",
+      "url": "https://hookarmor.tech"
+    },
+    "datePublished": "2026-09-23"
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #070a12;
+      --bg-card: #0d1322;
+      --border: #1e293b;
+      --accent: #3b82f6;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.7;
+      padding: 0 1.5rem;
+    }
+    nav {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 2rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: white;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-left: 1.5rem;
+    }
+    article {
+      max-width: 820px;
+      margin: 3rem auto;
+    }
+    .meta {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin-bottom: 1rem;
+    }
+    h1 {
+      font-size: 2.3rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      line-height: 1.25;
+      margin-bottom: 1.5rem;
+    }
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin: 2.5rem 0 1rem;
+      color: white;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+    p {
+      color: #cbd5e1;
+      font-size: 1.05rem;
+      margin-bottom: 1.5rem;
+    }
+    ul, ol {
+      margin-left: 1.5rem;
+      margin-bottom: 1.5rem;
+      color: #cbd5e1;
+    }
+    li { margin-bottom: 0.5rem; }
+    pre {
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: #e2e8f0;
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+    code {
+      font-family: var(--font-mono);
+      background: rgba(59, 130, 246, 0.1);
+      color: #60a5fa;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.88em;
+    }
+    pre code {
+      background: none;
+      color: inherit;
+      padding: 0;
+    }
+    .callout {
+      background: rgba(244, 63, 94, 0.08);
+      border-left: 4px solid #f43f5e;
+      padding: 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.5rem;
+    }
+    .callout-success {
+      background: rgba(16, 185, 129, 0.08);
+      border-left: 4px solid #10b981;
+      padding: 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.5rem;
+    }
+    .cta-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-top: 3.5rem;
+      text-align: center;
+    }
+    .cta-btn {
+      display: inline-block;
+      background: var(--accent);
+      color: white;
+      text-decoration: none;
+      font-weight: 700;
+      padding: 0.75rem 1.75rem;
+      border-radius: 8px;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">🛡️ HookArmor</a>
+    <div class="nav-links">
+      <a href="/blog">Blog</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <article>
+    <div class="meta">SYSTEMS ARCHITECTURE &bull; STRIPE WEBHOOKS</div>
+    <h1>Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)</h1>
+    
+    <p>You built a dead-letter queue. Your Next.js app or AWS Lambda function crashed on a Stripe invoice event, your queue caught the failed webhook, and you spent 30 minutes fixing the database bug. You deploy the fix, click "Replay"... and your application immediately throws a 400 Bad Request:</p>
+
+    <pre><code>Error: Webhook signature verification failed: Timestamp outside the tolerance zone (1800s > 300s)</code></pre>
+
+    <p>Every developer who attempts to build a webhook retry queue eventually runs headfirst into this wall. Here is why it happens, why common workarounds introduce security vulnerabilities, and how to architect a solution that preserves both security and zero-loss replayability.</p>
+
+    <h2>1. The 300-Second Signature Window</h2>
+    <p>When Stripe dispatches a webhook, it computes an HMAC SHA-256 signature across the current Unix timestamp and the raw JSON payload:</p>
+
+    <pre><code>v1 = HMAC-SHA256(secret, "${t}.${rawBody}")</code></pre>
+
+    <p>In the official Stripe Node SDK (and Python, Ruby, Go, and PHP equivalents), <code>stripe.webhooks.constructEvent()</code> does two independent checks:</p>
+    <ol>
+      <li><strong>Cryptographic authenticity</strong>: Does <code>v1</code> match the HMAC of <code>${t}.${rawBody}</code>?</li>
+      <li><strong>Replay protection</strong>: Is <code>Math.abs(Date.now() / 1000 - t) <= 300</code> (5 minutes)?</li>
+    </ol>
+
+    <div class="callout">
+      <strong>The Conflict</strong>: Replay attacks and legitimate dead-letter retries look mathematically identical to Stripe's SDK. If your queue holds an event for longer than 300 seconds, standard signature verification will reject it every single time.
+    </div>
+
+    <h2>2. Why The Common Workarounds Fail</h2>
+
+    <h3>Bad Fix 1: Disabling Signature Verification on Retries</h3>
+    <p>Some teams bypass verification if a custom header like <code>x-replayed: true</code> is present. This is disastrous: anyone who discovers your webhook endpoint can forge fake <code>customer.subscription.created</code> events with <code>x-replayed: true</code> and grant themselves free subscriptions.</p>
+
+    <h3>Bad Fix 2: Bumping the Tolerance Window</h3>
+    <pre><code>// Dangerous: Opens a 3-day replay vulnerability
+stripe.webhooks.constructEvent(body, sig, secret, 86400 * 3);</code></pre>
+    <p>Increasing the tolerance to 72 hours allows retries to pass, but completely guts replay protection across your entire payment pipeline, allowing attackers to replay stale invoices.</p>
+
+    <h2>3. The Correct Architecture: Ingress Verify & Outbound Re-Signing</h2>
+    <p>The only robust solution that allows your downstream application to keep default 300-second tolerance without altering your production codebase is <strong>Ingress Verification with Fresh Outbound Re-Signing</strong>:</p>
+
+    <div class="callout-success">
+      <strong>The Architecture:</strong>
+      <ol>
+        <li><strong>At Ingress (<10ms)</strong>: HookArmor receives the webhook from Stripe. It uses your endpoint's signing secret to verify the original signature within the 300s tolerance window. It rejects forgeries upfront and acknowledges Stripe with an immediate <code>200 OK</code>.</li>
+        <li><strong>Durable Storage</strong>: The raw uncorrupted payload is written to a persistent Dead-Letter Queue (SQLite in WAL mode).</li>
+        <li><strong>At Forward / Replay</strong>: When HookArmor relays the event (whether 2ms later, on retry 1 hour later, or upon manual replay next week), it computes a <strong>fresh timestamp</strong> <code>t=now</code> and generates a mathematically valid <code>v1</code> signature using your secret.</li>
+      </ol>
+    </div>
+
+    <p>Here is what the outbound re-signing logic looks like under the hood:</p>
+
+    <pre><code>const crypto = require('crypto');
+
+function signStripeHeaders(rawBody, headers, secret) {
+  const freshTimestamp = Math.floor(Date.now() / 1000);
+  const freshSignature = crypto
+    .createHmac('sha256', secret)
+    .update(`${freshTimestamp}.${rawBody}`)
+    .digest('hex');
+
+  return {
+    ...headers,
+    'stripe-signature': `t=${freshTimestamp},v1=${freshSignature}`
+  };
+}</code></pre>
+
+    <h2>4. The Outcome: Zero Code Changes in Your App</h2>
+    <p>Because the forwarded request arrives with a fresh timestamp and a genuine cryptographic HMAC, your backend handler remains completely stock:</p>
+
+    <pre><code>// In your Next.js App Router route:
+export async function POST(req) {
+  const body = await req.text();
+  const sig = req.headers.get('stripe-signature');
+
+  // Works perfectly on first attempt AND on replay 3 weeks later!
+  const event = stripe.webhooks.constructEvent(
+    body, 
+    sig, 
+    process.env.STRIPE_WEBHOOK_SECRET
+  );
+
+  await handleBilling(event);
+  return NextResponse.json({ received: true });
+}</code></pre>
+
+    <div class="cta-box">
+      <h3>Never Lose a Stripe Webhook Again</h3>
+      <p>HookArmor handles ingress verification, fresh outbound re-signing, background retries, and 1-click dead-letter replay in a single lightweight binary.</p>
+      <a href="https://github.com/pkdoddamani/hookarmor" class="cta-btn" target="_blank">View on GitHub (MIT Free)</a>
+    </div>
+  </article>
+</body>
+</html>

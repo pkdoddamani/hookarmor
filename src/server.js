@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { randomUUID } = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
 
@@ -309,9 +310,28 @@ function createServer(options = {}) {
     res.json(mockTargetBehavior);
   });
 
-  // Dashboard Web UI Route
+  // Landing Page Route
   app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'landing.html'));
+  });
+
+  // Interactive Dashboard Routes
+  app.get(['/dashboard', '/app'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
+
+  // Engineering Blog Routes
+  app.get('/blog', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'blog', 'index.html'));
+  });
+
+  app.get('/blog/:slug', (req, res) => {
+    const slug = req.params.slug.replace(/[^a-zA-Z0-9-_]/g, '');
+    const filePath = path.join(__dirname, 'public', 'blog', `${slug}.html`);
+    if (fs.existsSync(filePath)) {
+      return res.sendFile(filePath);
+    }
+    res.redirect('/blog');
   });
 
   return { app, server, storage, dispatcher, worker };

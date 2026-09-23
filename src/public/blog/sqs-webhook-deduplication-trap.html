@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The SQS Deduplication Trap: Why Naive Webhook Queues Silently Drop Payment Retries - HookArmor</title>
+  <meta name="description" content="Why writing unique constraint markers before webhook processing causes silent event drops on crash, and how to build zero-loss safe idempotency.">
+  <link rel="canonical" href="https://hookarmor.tech/blog/sqs-webhook-deduplication-trap">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "The SQS Deduplication Trap: Why Naive Webhook Queues Silently Drop Payment Retries",
+    "description": "An analysis of the database lock race condition where failed workers leave markers behind that fool Stripe into dropping retries.",
+    "author": {
+      "@type": "Organization",
+      "name": "HookArmor"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "HookArmor",
+      "url": "https://hookarmor.tech"
+    },
+    "datePublished": "2026-09-23"
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #070a12;
+      --bg-card: #0d1322;
+      --border: #1e293b;
+      --accent: #3b82f6;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.7;
+      padding: 0 1.5rem;
+    }
+    nav {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 2rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: white;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-left: 1.5rem;
+    }
+    article {
+      max-width: 820px;
+      margin: 3rem auto;
+    }
+    .meta {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin-bottom: 1rem;
+    }
+    h1 {
+      font-size: 2.3rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      line-height: 1.25;
+      margin-bottom: 1.5rem;
+    }
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin: 2.5rem 0 1rem;
+      color: white;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+    p {
+      color: #cbd5e1;
+      font-size: 1.05rem;
+      margin-bottom: 1.5rem;
+    }
+    pre {
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: #e2e8f0;
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+    code {
+      font-family: var(--font-mono);
+      background: rgba(59, 130, 246, 0.1);
+      color: #60a5fa;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.88em;
+    }
+    pre code {
+      background: none;
+      color: inherit;
+      padding: 0;
+    }
+    .callout {
+      background: rgba(244, 63, 94, 0.08);
+      border-left: 4px solid #f43f5e;
+      padding: 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.5rem;
+    }
+    .callout-success {
+      background: rgba(16, 185, 129, 0.08);
+      border-left: 4px solid #10b981;
+      padding: 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.5rem;
+    }
+    .cta-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-top: 3.5rem;
+      text-align: center;
+    }
+    .cta-btn {
+      display: inline-block;
+      background: var(--accent);
+      color: white;
+      text-decoration: none;
+      font-weight: 700;
+      padding: 0.75rem 1.75rem;
+      border-radius: 8px;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">🛡️ HookArmor</a>
+    <div class="nav-links">
+      <a href="/blog">Blog</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <article>
+    <div class="meta">DISTRIBUTED SYSTEMS &bull; IDEMPOTENCY</div>
+    <h1>The SQS Deduplication Trap: Why Naive Webhook Queues Silently Drop Payment Retries</h1>
+    
+    <p>Every senior engineer will tell you: <em>"Just put SQS and Lambda in front of your webhooks in 20 lines of code."</em></p>
+    
+    <p>The pattern seems simple enough: an API Gateway endpoint verifies the signature, drops the event onto an Amazon SQS queue, and returns an immediate <code>200 OK</code> to Stripe. A separate consumer Lambda drains the queue and processes the customer subscription.</p>
+
+    <p>Then you hit the duplicate delivery problem. SQS provides <strong>at-least-once delivery</strong>, meaning network retries or visibility timeouts will inevitably deliver the same invoice twice. Your customers start receiving duplicate billing confirmation emails and double credits.</p>
+
+    <h2>The "Fix" That Causes Silent Data Loss</h2>
+    <p>To prevent duplicates, developers typically add a unique constraint table in Postgres or DynamoDB:</p>
+
+    <pre><code>// The common "quick" deduplication pattern:
+async function handleWebhook(event) {
+  // Try to claim the event upfront
+  const res = await db.query(
+    "INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING *",
+    [event.id]
+  );
+
+  if (res.rows.length === 0) {
+    // Seen before! Skip to prevent duplicate email
+    return { status: 'duplicate_skipped' };
+  }
+
+  try {
+    await provisionSubscription(event);
+  } catch (err) {
+    // Rollback marker so retry can try again!
+    await db.query("DELETE FROM processed_events WHERE event_id = $1", [event.id]);
+    throw err;
+  }
+}</code></pre>
+
+    <div class="callout">
+      <strong>The Fatal Flaw: The Catch Block Never Runs</strong><br>
+      Notice the assumption: you assume the <code>catch</code> block will always execute to clean up the marker if something goes wrong. In reality, production serverless environments fail hard:
+      <ul>
+        <li><strong>Lambda Out-Of-Memory (OOM)</strong>: Process is killed by the runtime immediately. No catch block runs.</li>
+        <li><strong>Hard Execution Timeout</strong>: Lambda reaches its 15-minute or API Gateway 29-second ceiling. Process terminated.</li>
+        <li><strong>Database Pool Exhaustion</strong>: The downstream query timed out because Postgres ran out of connections. The <code>DELETE</code> statement fails with the exact same connection error!</li>
+      </ul>
+    </div>
+
+    <h2>The Silent Disappearance of Payment Events</h2>
+    <p>When the process dies without executing the <code>DELETE</code> cleanup, the <code>event_id</code> marker remains locked in the database.</p>
+    <p>Stripe's exponential backoff kicks in and delivers the webhook again 1 hour later. The worker receives the retry, queries <code>INSERT ... ON CONFLICT DO NOTHING</code>, sees the stale marker from the earlier crashed attempt, concludes it was already successfully handled, and returns <code>200 OK</code>!</p>
+    <p><strong>The event is gone forever.</strong> The customer was charged, your database has no subscription record, and no alert was fired.</p>
+
+    <h2>The Solution: Status-Keyed Ingress Deduplication</h2>
+    <p>A resilient webhook gateway must decouple receipt from downstream execution status. In HookArmor, deduplication operates under three strict invariants:</p>
+
+    <div class="callout-success">
+      <ol>
+        <li><strong>Only Deduplicate Successful Deliveries</strong>: Deduplication checks only suppress if the existing record in storage has <code>status === 'delivered'</code>. If an event failed, timed out, or is quarantined in the DLQ, re-deliveries are never suppressed.</li>
+        <li><strong>Single Logical Event Identity</strong>: An incoming retry for a failed event touches and re-queues the existing row instead of creating duplicate competing rows.</li>
+        <li><strong>Destination Concurrency Limiting</strong>: Rather than letting 100 simultaneous invoices flood your database and exhaust the connection pool, HookArmor's ingress buffers the burst and relays requests under a configurable concurrency cap (e.g., 5 concurrent connections).</li>
+      </ol>
+    </div>
+
+    <div class="cta-box">
+      <h3>Bulletproof Webhooks Without The AWS Glue Code</h3>
+      <p>HookArmor provides safe status deduplication, concurrency protection, and 1-click dead-letter replay in a single self-hostable binary.</p>
+      <a href="https://github.com/pkdoddamani/hookarmor" class="cta-btn" target="_blank">Star on GitHub</a>
+    </div>
+  </article>
+</body>
+</html>
