@@ -1,13 +1,141 @@
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const EventEmitter = require('events');
 const Alerter = require('./alerter');
 
 class Dispatcher extends EventEmitter {
-  constructor(storage) {
+  constructor(storage, options = {}) {
     super();
     this.storage = storage;
-    this.activeRetries = new Set();
+    this.defaultConcurrency = options.defaultConcurrency || 5;
+    this.inFlightCount = new Map();
+    this.waitQueues = new Map();
+    this.defaultTimeoutMs = options.defaultTimeoutMs || 25000;
+  }
+
+  // Verify signature at ingress (preventing HookArmor from acting as an open signature oracle)
+  static verifyIngressSignature(provider, rawBody, headers, secret, toleranceSec = 300) {
+    if (!secret) return { valid: true };
+
+    try {
+      if (provider === 'stripe') {
+        const sigHeader = headers['stripe-signature'];
+        if (!sigHeader) return { valid: false, reason: 'Missing Stripe-Signature header' };
+
+        const parts = sigHeader.split(',').reduce((acc, item) => {
+          const [k, v] = item.split('=');
+          if (k && v) acc[k.trim()] = v.trim();
+          return acc;
+        }, {});
+
+        if (!parts.t || !parts.v1) return { valid: false, reason: 'Malformed Stripe-Signature header' };
+
+        const timestamp = parseInt(parts.t, 10);
+        const now = Math.floor(Date.now() / 1000);
+        if (Math.abs(now - timestamp) > toleranceSec) {
+          return { valid: false, reason: `Timestamp outside tolerance (${Math.abs(now - timestamp)}s > ${toleranceSec}s)` };
+        }
+
+        const expectedSig = crypto
+          .createHmac('sha256', secret)
+          .update(`${parts.t}.${rawBody}`)
+          .digest('hex');
+
+        const expectedBuf = Buffer.from(expectedSig);
+        const actualBuf = Buffer.from(parts.v1);
+        if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+          return { valid: false, reason: 'Signature mismatch' };
+        }
+        return { valid: true };
+      }
+
+      if (provider === 'shopify') {
+        const hmac = headers['x-shopify-hmac-sha256'];
+        if (!hmac) return { valid: false, reason: 'Missing X-Shopify-Hmac-Sha256 header' };
+
+        const expectedSig = crypto
+          .createHmac('sha256', secret)
+          .update(rawBody)
+          .digest('base64');
+
+        const expectedBuf = Buffer.from(expectedSig);
+        const actualBuf = Buffer.from(hmac);
+        if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+          return { valid: false, reason: 'Shopify HMAC mismatch' };
+        }
+        return { valid: true };
+      }
+
+      if (provider === 'github') {
+        const sig = headers['x-hub-signature-256'];
+        if (!sig) return { valid: false, reason: 'Missing X-Hub-Signature-256 header' };
+
+        const expectedSig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        const expectedBuf = Buffer.from(expectedSig);
+        const actualBuf = Buffer.from(sig);
+        if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+          return { valid: false, reason: 'GitHub signature mismatch' };
+        }
+        return { valid: true };
+      }
+
+      return { valid: true };
+    } catch (err) {
+      return { valid: false, reason: err.message };
+    }
+  }
+
+  // Fresh re-signing on forward/replay to defeat the 5-minute Stripe expiration trap
+  signHeaders(provider, rawBody, headers, secret) {
+    if (!secret) return headers;
+
+    const modified = { ...headers };
+    try {
+      if (provider === 'stripe') {
+        const freshTimestamp = Math.floor(Date.now() / 1000);
+        const freshSignature = crypto
+          .createHmac('sha256', secret)
+          .update(`${freshTimestamp}.${rawBody}`)
+          .digest('hex');
+        modified['stripe-signature'] = `t=${freshTimestamp},v1=${freshSignature}`;
+      } else if (provider === 'shopify') {
+        const freshHmac = crypto
+          .createHmac('sha256', secret)
+          .update(rawBody)
+          .digest('base64');
+        modified['x-shopify-hmac-sha256'] = freshHmac;
+      } else if (provider === 'github') {
+        const freshSig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        modified['x-hub-signature-256'] = freshSig;
+      }
+    } catch (e) {}
+
+    return modified;
+  }
+
+  async acquireSlot(endpointId, limit) {
+    const current = this.inFlightCount.get(endpointId) || 0;
+    if (current < limit) {
+      this.inFlightCount.set(endpointId, current + 1);
+      return;
+    }
+
+    return new Promise(resolve => {
+      if (!this.waitQueues.has(endpointId)) this.waitQueues.set(endpointId, []);
+      this.waitQueues.get(endpointId).push(resolve);
+    });
+  }
+
+  releaseSlot(endpointId, limit) {
+    const queue = this.waitQueues.get(endpointId);
+    if (queue && queue.length > 0) {
+      const next = queue.shift();
+      next();
+    } else {
+      const current = this.inFlightCount.get(endpointId) || 1;
+      this.inFlightCount.set(endpointId, Math.max(0, current - 1));
+    }
   }
 
   // Calculate exponential backoff with jitter: 30s, 2m, 10m, 30m, 2h
@@ -20,14 +148,33 @@ class Dispatcher extends EventEmitter {
   }
 
   async dispatch(event, endpoint) {
+    const limit = endpoint.concurrency_limit || this.defaultConcurrency;
+    await this.acquireSlot(endpoint.id, limit);
+
+    try {
+      return await this._executeDispatch(event, endpoint);
+    } finally {
+      this.releaseSlot(endpoint.id, limit);
+    }
+  }
+
+  async _executeDispatch(event, endpoint) {
     const startTime = Date.now();
     const targetUrl = endpoint.target_url;
 
-    const headers = { ...event.headers };
-    // Remove hop-by-hop headers and update host
+    let headers = { ...event.headers };
+
+    // Re-sign outbound headers if endpoint secret is configured
+    if (endpoint.secret) {
+      headers = this.signHeaders(event.provider, event.raw_body, headers, endpoint.secret);
+    }
+
+    // Remove hop-by-hop and encoding headers
     delete headers['host'];
     delete headers['connection'];
     delete headers['content-length'];
+    delete headers['content-encoding'];
+    delete headers['transfer-encoding'];
 
     const rawBuffer = Buffer.from(event.raw_body, 'utf8');
     headers['content-length'] = rawBuffer.length;
@@ -43,7 +190,7 @@ class Dispatcher extends EventEmitter {
         const req = client.request(url, {
           method: 'POST',
           headers,
-          timeout: 10000 // 10 second timeout
+          timeout: this.defaultTimeoutMs
         }, (res) => {
           let responseBody = '';
           res.setEncoding('utf8');
@@ -97,7 +244,7 @@ class Dispatcher extends EventEmitter {
         });
 
         req.on('timeout', async () => {
-          req.destroy(new Error('Connection timed out after 10000ms'));
+          req.destroy(new Error(`Connection timed out after ${this.defaultTimeoutMs}ms`));
         });
 
         req.on('error', async (err) => {

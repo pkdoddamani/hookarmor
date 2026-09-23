@@ -2,5 +2,12 @@ node_modules
 data
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.tgz
 .env
+*.log
+scratch_*
+*_response.*
+run_advisors.*
+run_grok.*

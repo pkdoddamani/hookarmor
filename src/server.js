@@ -1,12 +1,31 @@
 const express = require('express');
 const cors = require('cors');
-const { v4: uuidv4 } = require('crypto');
+const { randomUUID } = require('crypto');
 const path = require('path');
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const Storage = require('./storage');
 const Dispatcher = require('./dispatcher');
+const RetryWorker = require('./worker');
+
+function isPrivateOrMetadataUrl(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      hostname === '169.254.169.254' ||
+      hostname === 'metadata.google.internal' ||
+      hostname === '100.100.100.200' ||
+      hostname.startsWith('169.254.')
+    ) {
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return true;
+  }
+}
 
 function createServer(options = {}) {
   const app = express();
@@ -14,7 +33,21 @@ function createServer(options = {}) {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   const storage = new Storage(options.dbPath);
-  const dispatcher = new Dispatcher(storage);
+  const dispatcher = new Dispatcher(storage, {
+    defaultConcurrency: options.defaultConcurrency || 5,
+    defaultTimeoutMs: options.defaultTimeoutMs || 25000
+  });
+
+  const worker = new RetryWorker(storage, dispatcher, {
+    intervalMs: options.retryIntervalMs || 5000
+  });
+  if (options.autoStartWorker !== false) {
+    worker.start();
+  }
+
+  server.on('close', () => {
+    worker.stop();
+  });
 
   // Broadcast helper for real-time WebSocket dashboard
   function broadcast(type, data) {
@@ -85,6 +118,18 @@ function createServer(options = {}) {
       } catch (e) {}
     }
 
+    // 0. Verify signature on ingress if endpoint secret is configured
+    if (endpoint.secret) {
+      const verification = Dispatcher.verifyIngressSignature(provider, rawBody, headers, endpoint.secret);
+      if (!verification.valid) {
+        return res.status(400).json({
+          error: 'Webhook signature verification failed',
+          provider,
+          reason: verification.reason
+        });
+      }
+    }
+
     // Deduplication check: if this event ID was already delivered, ack immediately without duplicating downstream side effects
     if (idempotencyKey) {
       const existing = storage.findEventByIdempotencyKey(endpoint.id, idempotencyKey);
@@ -140,6 +185,21 @@ function createServer(options = {}) {
   // REST API: JSON Body Parser for Dashboard / Management
   app.use(express.json());
 
+  // Management API Authentication Middleware (optional, active when HOOKARMOR_API_KEY is configured)
+  const apiKey = options.apiKey || process.env.HOOKARMOR_API_KEY || null;
+  app.use('/api', (req, res, next) => {
+    // Keep public waitlist signup open for landing page
+    if (req.path === '/waitlist' && req.method === 'POST') return next();
+    if (!apiKey) return next();
+
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers['x-api-key'] || req.query.api_key;
+    if (token !== apiKey) {
+      return res.status(401).json({ error: 'Unauthorized: valid HookArmor API key required' });
+    }
+    next();
+  });
+
   // Get Stats
   app.get('/api/stats', (req, res) => {
     res.json(storage.getStats());
@@ -152,9 +212,12 @@ function createServer(options = {}) {
 
   // Create or Update Endpoint
   app.post('/api/endpoints', (req, res) => {
-    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries } = req.body;
+    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit } = req.body;
     if (!id || !name || !targetUrl) {
       return res.status(400).json({ error: 'id, name, and targetUrl are required' });
+    }
+    if (isPrivateOrMetadataUrl(targetUrl)) {
+      return res.status(400).json({ error: 'targetUrl cannot target cloud metadata or link-local addresses (SSRF blocked)' });
     }
     const endpoint = storage.createEndpoint({
       id,
@@ -163,7 +226,8 @@ function createServer(options = {}) {
       secret,
       alertWebhookUrl,
       autoRetry: autoRetry !== undefined ? autoRetry : 1,
-      maxRetries: maxRetries || 5
+      maxRetries: maxRetries || 5,
+      concurrencyLimit: concurrencyLimit || concurrency_limit || 5
     });
     res.json(endpoint);
   });
@@ -250,7 +314,7 @@ function createServer(options = {}) {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
 
-  return { app, server, storage, dispatcher };
+  return { app, server, storage, dispatcher, worker };
 }
 
 module.exports = { createServer };

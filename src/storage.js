@@ -16,6 +16,11 @@ class Storage {
   }
 
   init() {
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = NORMAL');
+    } catch (e) {}
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS endpoints (
         id TEXT PRIMARY KEY,
@@ -25,6 +30,7 @@ class Storage {
         alert_webhook_url TEXT,
         auto_retry INTEGER DEFAULT 1,
         max_retries INTEGER DEFAULT 5,
+        concurrency_limit INTEGER DEFAULT 5,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -68,15 +74,17 @@ class Storage {
       CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
       CREATE INDEX IF NOT EXISTS idx_events_endpoint ON events(endpoint_id);
       CREATE INDEX IF NOT EXISTS idx_events_idempotency ON events(endpoint_id, idempotency_key);
+      CREATE INDEX IF NOT EXISTS idx_events_retry ON events(status, next_retry_at);
+      CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
     `);
   }
 
-  createEndpoint({ id, name, targetUrl, secret = '', alertWebhookUrl = '', autoRetry = 1, maxRetries = 5 }) {
+  createEndpoint({ id, name, targetUrl, secret = '', alertWebhookUrl = '', autoRetry = 1, maxRetries = 5, concurrencyLimit = 5 }) {
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(id, name, targetUrl, secret, alertWebhookUrl, autoRetry ? 1 : 0, maxRetries);
+    stmt.run(id, name, targetUrl, secret, alertWebhookUrl, autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5);
     return this.getEndpoint(id);
   }
 
@@ -192,7 +200,7 @@ class Storage {
 
   getFailedEventsToRetry(endpointId = null) {
     let sql = `
-      SELECT e.*, ep.max_retries, ep.target_url, ep.alert_webhook_url
+      SELECT e.*, ep.max_retries, ep.target_url, ep.secret, ep.alert_webhook_url
       FROM events e
       JOIN endpoints ep ON e.endpoint_id = ep.id
       WHERE e.status = 'failed' AND ep.auto_retry = 1 AND e.attempts < ep.max_retries
@@ -208,6 +216,36 @@ class Storage {
       ...r,
       headers: JSON.parse(r.headers)
     }));
+  }
+
+  getEventsDueForRetry(limit = 25) {
+    const sql = `
+      SELECT e.*, ep.max_retries, ep.target_url, ep.secret, ep.alert_webhook_url
+      FROM events e
+      JOIN endpoints ep ON e.endpoint_id = ep.id
+      WHERE (
+        (e.status = 'failed' AND ep.auto_retry = 1 AND e.attempts < ep.max_retries AND e.next_retry_at IS NOT NULL AND e.next_retry_at <= datetime('now'))
+        OR
+        (e.status = 'pending' AND ep.auto_retry = 1 AND e.created_at <= datetime('now', '-20 seconds'))
+      )
+      ORDER BY e.created_at ASC
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(sql).all(limit);
+    return rows.map(r => ({
+      ...r,
+      headers: JSON.parse(r.headers)
+    }));
+  }
+
+  claimEventForRetry(eventId) {
+    const stmt = this.db.prepare(`
+      UPDATE events
+      SET status = 'replaying', updated_at = datetime('now')
+      WHERE id = ? AND status IN ('failed', 'pending')
+    `);
+    const info = stmt.run(eventId);
+    return info.changes > 0;
   }
 
   addWaitlist(email, source = 'website') {
