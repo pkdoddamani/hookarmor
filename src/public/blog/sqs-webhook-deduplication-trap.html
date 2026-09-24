@@ -10,6 +10,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   
+  <!-- OpenGraph / Twitter Cards for Social & Search Snippets -->
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://hookarmour.dev/blog/sqs-webhook-deduplication-trap.html">
+  <meta property="og:title" content="The SQS Deduplication Trap: Why Naive Webhook Queues Silently Drop Payment Retries">
+  <meta property="og:description" content="Why writing unique constraint markers before webhook processing causes silent event drops on crash, and how to build zero-loss safe idempotency.">
+  <meta property="og:site_name" content="HookArmor Engineering Blog">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="The SQS Deduplication Trap: Why Naive Webhook Queues Silently Drop Payment Retries">
+  <meta name="twitter:description" content="Why writing unique constraint markers before webhook processing causes silent event drops on crash, and how to build zero-loss safe idempotency.">
+
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -23,7 +33,7 @@
     "publisher": {
       "@type": "Organization",
       "name": "HookArmor",
-      "url": "https://hookarmor.tech"
+      "url": "https://hookarmour.dev"
     },
     "datePublished": "2026-09-23"
   }

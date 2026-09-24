@@ -355,7 +355,16 @@
         <input type="email" id="waitlist-email" placeholder="Enter your work email for Cloud Beta..." required style="flex: 1; background: transparent; border: none; padding: 0.6rem 0.8rem; color: white; outline: none; font-size: 0.9rem;">
         <button type="submit" class="btn btn-primary" style="padding: 0.6rem 1.2rem; font-size: 0.85rem;">Join Cloud Beta</button>
       </form>
-      <div id="waitlist-msg" style="font-size: 0.8rem; margin-top: 0.5rem; display: none;"></div>
+      <div id="waitlist-msg" style="font-size: 0.85rem; margin-top: 0.75rem; display: none; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); padding: 1rem; border-radius: 10px; text-align: left;">
+        <div style="font-weight: 700; color: #10b981; font-size: 0.95rem; margin-bottom: 0.35rem;">🎉 You're on the HookArmor Cloud Beta waitlist!</div>
+        <p style="color: #94a3b8; font-size: 0.82rem; margin-bottom: 0.75rem; line-height: 1.5;">
+          Your invite has been recorded. While your cloud cluster is being queued, jump straight into the live interactive demo to test 1-click dead-letter replays right now.
+        </p>
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <a href="/dashboard" class="btn btn-primary" style="padding: 0.45rem 0.9rem; font-size: 0.8rem;">🚀 Launch Live Demo Now</a>
+          <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" class="btn btn-outline" style="padding: 0.45rem 0.9rem; font-size: 0.8rem;">⭐ Star on GitHub</a>
+        </div>
+      </div>
     </div>
 
     <div class="terminal-box">
@@ -372,8 +381,11 @@
   <script>
     async function handleWaitlist(e) {
       e.preventDefault();
-      const email = document.getElementById('waitlist-email').value;
+      const input = document.getElementById('waitlist-email');
+      const email = input.value.trim();
+      const form = document.getElementById('waitlist-form');
       const msg = document.getElementById('waitlist-msg');
+      if (!email) return;
       try {
         const res = await fetch('/api/waitlist', {
           method: 'POST',
@@ -381,14 +393,13 @@
           body: JSON.stringify({ email, source: 'hero_landing' })
         });
         const data = await res.json();
+        form.style.display = 'none';
         msg.style.display = 'block';
-        msg.style.color = '#10b981';
-        msg.textContent = '🎉 You are on the waitlist! We will reach out with early access.';
-        document.getElementById('waitlist-email').value = '';
       } catch (err) {
         msg.style.display = 'block';
-        msg.style.color = '#f43f5e';
-        msg.textContent = 'Could not join waitlist right now. Please try again.';
+        msg.style.background = 'rgba(244, 63, 94, 0.1)';
+        msg.style.borderColor = 'rgba(244, 63, 94, 0.3)';
+        msg.innerHTML = '<span style="color: #f43f5e;">⚠️ Could not join waitlist right now. Please try again.</span>';
       }
     }
   </script>
@@ -484,7 +495,7 @@
           <li>✓ Automatic Exponential Retries</li>
           <li>✓ 1-Click UI & API Replay</li>
         </ul>
-        <a href="#waitlist-form" onclick="document.getElementById('waitlist-email').focus();" class="btn btn-primary" style="margin-top: auto;">Get Started</a>
+        <a href="#waitlist-form" onclick="focusWaitlist();" class="btn btn-primary" style="margin-top: auto;">Get Started</a>
       </div>
 
       <div class="pricing-card">
@@ -499,10 +510,22 @@
           <li>✓ Multi-team Access</li>
           <li>✓ Priority Global Ingress Edge</li>
         </ul>
-        <a href="#waitlist-form" onclick="document.getElementById('waitlist-email').focus();" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
+        <a href="#waitlist-form" onclick="focusWaitlist();" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
       </div>
     </div>
   </section>
+
+  <script>
+    function focusWaitlist() {
+      const form = document.getElementById('waitlist-form');
+      const input = document.getElementById('waitlist-email');
+      if (form) form.style.display = 'flex';
+      if (input) {
+        input.focus();
+        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  </script>
 
   <footer>
     <div style="max-width: 600px; margin: 0 auto 1.5rem; display: flex; justify-content: center; gap: 2rem;">

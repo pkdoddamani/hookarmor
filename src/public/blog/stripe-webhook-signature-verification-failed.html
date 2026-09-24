@@ -10,6 +10,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   
+  <!-- OpenGraph / Twitter Cards for Social & Search Snippets -->
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://hookarmour.dev/blog/stripe-webhook-signature-verification-failed.html">
+  <meta property="og:title" content="Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)">
+  <meta property="og:description" content="Why stripe.webhooks.constructEvent throws 'Timestamp outside the tolerance zone' on replays older than 300s, and how to implement cryptographic re-signing to defeat it.">
+  <meta property="og:site_name" content="HookArmor Engineering Blog">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)">
+  <meta name="twitter:description" content="Why stripe.webhooks.constructEvent throws 'Timestamp outside the tolerance zone' on replays older than 300s, and how to implement cryptographic re-signing to defeat it.">
+
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
