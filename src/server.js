@@ -201,10 +201,11 @@ function createServer(options = {}) {
 
     if (!apiKey) return next();
 
+    // Accept API token strictly via Authorization or X-Api-Key headers (NEVER query string URL)
     const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers['x-api-key'] || req.query.api_key;
-    if (token !== apiKey) {
-      return res.status(401).json({ error: 'Unauthorized: valid HookArmor API key required' });
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers['x-api-key'] || '';
+    if (!token || token !== apiKey) {
+      return res.status(401).json({ error: 'Unauthorized: valid HookArmor API key required in header' });
     }
     next();
   });

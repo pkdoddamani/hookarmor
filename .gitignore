@@ -12,3 +12,5 @@ scratch_*
 *_response.*
 run_advisors.*
 run_grok.*
+admin_key.txt
+*key*.txt

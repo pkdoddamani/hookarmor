@@ -674,7 +674,8 @@
     let ws = null;
 
     function getApiKey() {
-      return localStorage.getItem('hookarmor_api_key') || '';
+      // Stored strictly in ephemeral sessionStorage (destroyed when tab is closed)
+      return sessionStorage.getItem('ha_admin_session') || '';
     }
 
     function getAuthHeaders(extraHeaders = {}) {
@@ -686,13 +687,7 @@
     }
 
     function checkAdminAuth() {
-      const params = new URLSearchParams(window.location.search);
-      const keyFromUrl = params.get('api_key');
-      if (keyFromUrl) {
-        localStorage.setItem('hookarmor_api_key', keyFromUrl.trim());
-        const cleanUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, cleanUrl);
-      }
+      // Strictly in-session auth only; never extract from or allow keys in URL
       updateAdminUI();
     }
 
@@ -714,10 +709,10 @@
           badgeArea.innerHTML = `
             <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); font-size: 0.72rem; padding: 0.2rem 0.5rem;">👑 Admin</span>
             <button class="btn btn-outline btn-sm" onclick="openLeadsModal()" style="border-color: #3b82f6; color: #60a5fa; font-size: 0.75rem; padding: 0.35rem 0.65rem;">📋 Beta Leads (${cachedLeads.length})</button>
-            <button class="btn btn-secondary btn-sm" onclick="logoutAdmin()" title="Logout Admin" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Lock</button>
+            <button class="btn btn-secondary btn-sm" onclick="logoutAdmin()" title="End Admin Session" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Lock</button>
           `;
         } else {
-          localStorage.removeItem('hookarmor_api_key');
+          sessionStorage.removeItem('ha_admin_session');
           badgeArea.innerHTML = `
             <button class="btn btn-secondary btn-sm" onclick="promptApiKey()" style="opacity: 0.8; font-size: 0.75rem; padding: 0.35rem 0.6rem;">🔑 Admin Login</button>
           `;
@@ -728,15 +723,15 @@
     }
 
     function promptApiKey() {
-      const key = prompt('Enter your HOOKARMOR_API_KEY to unlock admin mode:');
+      const key = prompt('Enter HookArmor Admin Master Key (passed via secure header only):');
       if (key && key.trim()) {
-        localStorage.setItem('hookarmor_api_key', key.trim());
+        sessionStorage.setItem('ha_admin_session', key.trim());
         updateAdminUI();
       }
     }
 
     function logoutAdmin() {
-      localStorage.removeItem('hookarmor_api_key');
+      sessionStorage.removeItem('ha_admin_session');
       updateAdminUI();
     }
 
