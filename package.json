@@ -4,11 +4,28 @@
   "description": "Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and B2B SaaS.",
   "main": "index.js",
   "bin": {
-    "hookarmor": "./bin/hookarmor.js"
+    "hookarmor": "bin/hookarmor.js"
   },
+  "files": [
+    "bin",
+    "src",
+    "index.js",
+    "README.md"
+  ],
   "scripts": {
     "start": "node bin/hookarmor.js start",
     "test": "node test/verify.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pkdoddamani/hookarmor.git"
+  },
+  "homepage": "https://hookarmour.dev",
+  "bugs": {
+    "url": "https://github.com/pkdoddamani/hookarmor/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [
     "webhook",

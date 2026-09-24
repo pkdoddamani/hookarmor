@@ -1,0 +1,11 @@
+test/
+distribution/
+data/
+*.db*
+*.log
+*.txt
+.github/
+Dockerfile
+docker-compose.yml
+railway.json
+render.yaml
