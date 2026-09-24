@@ -191,6 +191,14 @@ function createServer(options = {}) {
   app.use('/api', (req, res, next) => {
     // Keep public waitlist signup open for landing page
     if (req.path === '/waitlist' && req.method === 'POST') return next();
+
+    // Allow public read-only demo access & replay simulation so prospective users can explore live
+    const isPublicDemo =
+      (req.method === 'GET' && (req.path === '/stats' || req.path === '/endpoints' || req.path === '/events' || /^\/events\/[^\/]+$/.test(req.path))) ||
+      (req.method === 'POST' && (req.path === '/events/replay-all' || /^\/events\/[^\/]+\/replay$/.test(req.path)));
+
+    if (isPublicDemo) return next();
+
     if (!apiKey) return next();
 
     const authHeader = req.headers['authorization'] || '';
@@ -308,6 +316,17 @@ function createServer(options = {}) {
 
   app.get('/mock/config', (req, res) => {
     res.json(mockTargetBehavior);
+  });
+
+  // SEO & Web Crawler Discovery
+  app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.sendFile(path.join(__dirname, 'public', 'robots.txt'));
+  });
+
+  app.get('/sitemap.xml', (req, res) => {
+    res.type('application/xml');
+    res.sendFile(path.join(__dirname, 'public', 'sitemap.xml'));
   });
 
   // Landing Page Route

@@ -5,6 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookArmor - Never Lose a Stripe or Shopify Webhook Again</title>
   <meta name="description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), Ingress Proxy, and 1-Click Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.">
+  <link rel="canonical" href="https://hookarmour.dev/">
+  
+  <!-- OpenGraph / Facebook / LinkedIn / Slack -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://hookarmour.dev/">
+  <meta property="og:title" content="HookArmor - Never Lose a Stripe or Shopify Webhook Again">
+  <meta property="og:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+  <meta property="og:site_name" content="HookArmor">
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://hookarmour.dev/">
+  <meta name="twitter:title" content="HookArmor - Never Lose a Stripe or Shopify Webhook Again">
+  <meta name="twitter:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+
+  <!-- JSON-LD Structured Data for Google Rich Snippets -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "HookArmor",
+    "url": "https://hookarmour.dev",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Cloud / Docker / Node.js",
+    "description": "Zero-loss Webhook Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -302,6 +335,8 @@
       <span>🛡️</span> HookArmor <span class="badge-v1">v1.0 Production</span>
     </a>
     <div class="nav-cta">
+      <a href="/blog" class="btn btn-outline">Blog</a>
+      <a href="/dashboard" class="btn btn-outline">Live Demo</a>
       <a href="#pricing" class="btn btn-outline">Pricing</a>
       <a href="https://github.com/pkdoddamani/hookarmor" class="btn btn-primary" target="_blank">Star on GitHub ⭐</a>
     </div>
@@ -433,7 +468,7 @@
           <li>✓ Local Dev Tunneling</li>
           <li>✓ Community Support</li>
         </ul>
-        <a href="https://github.com/ishan-1010/hookarmor" class="btn btn-outline" style="margin-top: auto;">Download on GitHub</a>
+        <a href="https://github.com/pkdoddamani/hookarmor" class="btn btn-outline" style="margin-top: auto;" target="_blank">Download on GitHub</a>
       </div>
 
       <div class="pricing-card featured">
@@ -449,7 +484,7 @@
           <li>✓ Automatic Exponential Retries</li>
           <li>✓ 1-Click UI & API Replay</li>
         </ul>
-        <a href="#" class="btn btn-primary" style="margin-top: auto;">Get Started</a>
+        <a href="#waitlist-form" onclick="document.getElementById('waitlist-email').focus();" class="btn btn-primary" style="margin-top: auto;">Get Started</a>
       </div>
 
       <div class="pricing-card">
@@ -464,12 +499,17 @@
           <li>✓ Multi-team Access</li>
           <li>✓ Priority Global Ingress Edge</li>
         </ul>
-        <a href="#" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
+        <a href="#waitlist-form" onclick="document.getElementById('waitlist-email').focus();" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
       </div>
     </div>
   </section>
 
   <footer>
+    <div style="max-width: 600px; margin: 0 auto 1.5rem; display: flex; justify-content: center; gap: 2rem;">
+      <a href="/blog" style="color: #94a3b8; text-decoration: none;">Engineering Blog</a>
+      <a href="/dashboard" style="color: #94a3b8; text-decoration: none;">Live Demo Dashboard</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" style="color: #94a3b8; text-decoration: none;">GitHub Repository</a>
+    </div>
     <p>© 2026 HookArmor. MIT Licensed Open Source Core. Built for developers who refuse to lose payments.</p>
   </footer>
 

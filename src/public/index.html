@@ -466,6 +466,7 @@
       </div>
     </a>
     <div class="nav-actions">
+      <div id="admin-badge-area" style="display: flex; align-items: center; gap: 0.5rem;"></div>
       <button class="btn btn-secondary btn-sm" onclick="openSimulatorModal()">⚡ Test Simulator</button>
       <button class="btn btn-danger btn-sm" id="replay-all-btn" onclick="replayAllFailed()">🔄 Replay All Dead-Letter</button>
     </div>
@@ -633,10 +634,152 @@
     </div>
   </div>
 
+  <!-- Beta Leads Admin Modal -->
+  <div class="modal-backdrop" id="leads-modal" style="display: none;">
+    <div class="modal" style="max-width: 780px;">
+      <div class="modal-header">
+        <h3>📋 Cloud Beta Waitlist Leads</h3>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button class="btn btn-primary btn-sm" onclick="exportLeadsCsv()">📥 Export CSV</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeLeadsModal()">✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+          Verified leads registered through the public Cloud Beta waitlist on hookarmour.dev (stored securely in SQLite WAL volume).
+        </p>
+        <div style="max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr>
+                <th style="padding: 0.6rem 0.8rem; font-size: 0.75rem;">ID</th>
+                <th style="padding: 0.6rem 0.8rem; font-size: 0.75rem;">Email</th>
+                <th style="padding: 0.6rem 0.8rem; font-size: 0.75rem;">Source</th>
+                <th style="padding: 0.6rem 0.8rem; font-size: 0.75rem;">Registered At</th>
+              </tr>
+            </thead>
+            <tbody id="leads-table-body">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentFilter = null;
     let cachedEndpoints = [];
+    let cachedLeads = [];
     let ws = null;
+
+    function getApiKey() {
+      return localStorage.getItem('hookarmor_api_key') || '';
+    }
+
+    function getAuthHeaders(extraHeaders = {}) {
+      const key = getApiKey();
+      if (key) {
+        return { ...extraHeaders, 'Authorization': `Bearer ${key}` };
+      }
+      return extraHeaders;
+    }
+
+    function checkAdminAuth() {
+      const params = new URLSearchParams(window.location.search);
+      const keyFromUrl = params.get('api_key');
+      if (keyFromUrl) {
+        localStorage.setItem('hookarmor_api_key', keyFromUrl.trim());
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+      updateAdminUI();
+    }
+
+    async function updateAdminUI() {
+      const badgeArea = document.getElementById('admin-badge-area');
+      if (!badgeArea) return;
+      const key = getApiKey();
+      if (!key) {
+        badgeArea.innerHTML = `
+          <button class="btn btn-secondary btn-sm" onclick="promptApiKey()" style="opacity: 0.8; font-size: 0.75rem; padding: 0.35rem 0.6rem;">🔑 Admin Login</button>
+        `;
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/waitlist', { headers: getAuthHeaders() });
+        if (res.ok) {
+          cachedLeads = await res.json();
+          badgeArea.innerHTML = `
+            <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); font-size: 0.72rem; padding: 0.2rem 0.5rem;">👑 Admin</span>
+            <button class="btn btn-outline btn-sm" onclick="openLeadsModal()" style="border-color: #3b82f6; color: #60a5fa; font-size: 0.75rem; padding: 0.35rem 0.65rem;">📋 Beta Leads (${cachedLeads.length})</button>
+            <button class="btn btn-secondary btn-sm" onclick="logoutAdmin()" title="Logout Admin" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Lock</button>
+          `;
+        } else {
+          localStorage.removeItem('hookarmor_api_key');
+          badgeArea.innerHTML = `
+            <button class="btn btn-secondary btn-sm" onclick="promptApiKey()" style="opacity: 0.8; font-size: 0.75rem; padding: 0.35rem 0.6rem;">🔑 Admin Login</button>
+          `;
+        }
+      } catch (e) {
+        console.warn('Could not verify admin status', e);
+      }
+    }
+
+    function promptApiKey() {
+      const key = prompt('Enter your HOOKARMOR_API_KEY to unlock admin mode:');
+      if (key && key.trim()) {
+        localStorage.setItem('hookarmor_api_key', key.trim());
+        updateAdminUI();
+      }
+    }
+
+    function logoutAdmin() {
+      localStorage.removeItem('hookarmor_api_key');
+      updateAdminUI();
+    }
+
+    async function openLeadsModal() {
+      const tbody = document.getElementById('leads-table-body');
+      if (!cachedLeads || cachedLeads.length === 0) {
+        const res = await fetch('/api/waitlist', { headers: getAuthHeaders() });
+        if (res.ok) cachedLeads = await res.json();
+      }
+      if (!cachedLeads || cachedLeads.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No waitlist signups recorded yet.</td></tr>`;
+      } else {
+        tbody.innerHTML = cachedLeads.map(l => `
+          <tr>
+            <td style="padding: 0.6rem 0.8rem; font-family: var(--font-mono); font-size: 0.8rem;">#${l.id}</td>
+            <td style="padding: 0.6rem 0.8rem; font-weight: 600; color: #60a5fa;">${l.email}</td>
+            <td style="padding: 0.6rem 0.8rem; color: var(--text-muted); font-size: 0.8rem;">${l.source}</td>
+            <td style="padding: 0.6rem 0.8rem; color: var(--text-muted); font-size: 0.8rem;">${l.created_at}</td>
+          </tr>
+        `).join('');
+      }
+      document.getElementById('leads-modal').style.display = 'flex';
+    }
+
+    function closeLeadsModal() {
+      document.getElementById('leads-modal').style.display = 'none';
+    }
+
+    function exportLeadsCsv() {
+      if (!cachedLeads || cachedLeads.length === 0) {
+        alert('No leads to export.');
+        return;
+      }
+      const csvContent = 'id,email,source,created_at\n' + cachedLeads.map(l => `${l.id},"${l.email}","${l.source}","${l.created_at}"`).join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `hookarmor_beta_leads_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
 
     const templates = {
       stripe_payment: {
@@ -707,7 +850,7 @@
 
     async function loadStats() {
       try {
-        const res = await fetch('/api/stats');
+        const res = await fetch('/api/stats', { headers: getAuthHeaders() });
         const data = await res.json();
         document.getElementById('metric-total').textContent = data.total;
         document.getElementById('metric-delivered').textContent = data.delivered;
@@ -720,7 +863,7 @@
 
     async function loadEndpoints() {
       try {
-        const res = await fetch('/api/endpoints');
+        const res = await fetch('/api/endpoints', { headers: getAuthHeaders() });
         cachedEndpoints = await res.json();
         const container = document.getElementById('endpoints-list');
         const simSelect = document.getElementById('sim-endpoint-select');
@@ -755,7 +898,7 @@
       try {
         let url = '/api/events?limit=50';
         if (currentFilter) url += `&status=${currentFilter}`;
-        const res = await fetch(url);
+        const res = await fetch(url, { headers: getAuthHeaders() });
         const events = await res.json();
         const tbody = document.getElementById('events-table-body');
 
@@ -822,11 +965,16 @@
         return;
       }
 
-      await fetch('/api/endpoints', {
+      const res = await fetch('/api/endpoints', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ id, name, targetUrl, alertWebhookUrl, autoRetry: 1, maxRetries: 5 })
       });
+
+      if (res.status === 401) {
+        alert('Admin authorization required to create endpoints. Please click "Admin Login" in top right.');
+        return;
+      }
 
       toggleNewEndpointForm();
       await loadEndpoints();
@@ -834,7 +982,7 @@
 
     async function replayEvent(id) {
       try {
-        const res = await fetch(`/api/events/${id}/replay`, { method: 'POST' });
+        const res = await fetch(`/api/events/${id}/replay`, { method: 'POST', headers: getAuthHeaders() });
         const data = await res.json();
         if (data.success) {
           alert(`✅ Event ${id} successfully replayed! (HTTP ${data.statusCode})`);
@@ -851,7 +999,7 @@
     async function replayAllFailed() {
       if (!confirm('Replay all failed Dead-Letter Queue events now?')) return;
       try {
-        const res = await fetch('/api/events/replay-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        const res = await fetch('/api/events/replay-all', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }) });
         const data = await res.json();
         alert(`🔄 Dispatched replay for ${data.replayedCount} dead-letter events.`);
         await loadEvents();
@@ -863,7 +1011,7 @@
 
     async function inspectEvent(id) {
       try {
-        const res = await fetch(`/api/events/${id}`);
+        const res = await fetch(`/api/events/${id}`, { headers: getAuthHeaders() });
         const evt = await res.json();
         document.getElementById('modal-event-title').textContent = `Inspection: ${evt.id}`;
         
@@ -999,6 +1147,7 @@
 
     // Startup
     window.addEventListener('DOMContentLoaded', async () => {
+      checkAdminAuth();
       await loadEndpoints();
       await loadStats();
       await loadEvents();
