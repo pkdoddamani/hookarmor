@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 const { Command } = require('commander');
-const chalk = require('chalk');
+const _chalk = require('chalk');
+const chalk = _chalk.default || _chalk;
 const { createServer } = require('../src/server');
 const http = require('http');
 
@@ -34,7 +35,7 @@ program
     }
 
     server.listen(port, () => {
-      console.log(chalk.bold.blue('\n🛡️  HookArmor Webhook Sentinel is LIVE!'));
+      console.log(chalk.blue.bold('\n🛡️  HookArmor Webhook Sentinel is LIVE!'));
       console.log(chalk.gray('─────────────────────────────────────────'));
       console.log(`📡 Ingress Gateway : ${chalk.cyan(`http://localhost:${port}/in/:endpointId`)}`);
       console.log(`📊 Web Dashboard   : ${chalk.green.bold(`http://localhost:${port}`)}`);
@@ -73,7 +74,7 @@ program
     });
 
     server.listen(port, () => {
-      console.log(chalk.bold.cyan(`\n⚡ HookArmor Listen Active`));
+      console.log(chalk.cyan.bold(`\n⚡ HookArmor Listen Active`));
       console.log(`Forwarding: ${chalk.yellow(`http://localhost:${port}/in/${options.endpoint}`)} ➔ ${chalk.green(targetUrl)}`);
       console.log(`Dashboard:  ${chalk.cyan(`http://localhost:${port}`)}\n`);
     });
@@ -117,7 +118,7 @@ program
     try {
       const res = await fetch(`${baseUrl}/api/stats`);
       const data = await res.json();
-      console.log(chalk.bold.blue('\n🛡️  HookArmor Metrics'));
+      console.log(chalk.blue.bold('\n🛡️  HookArmor Metrics'));
       console.log(chalk.gray('───────────────────────'));
       console.log(`Total Ingested : ${chalk.cyan(data.total)}`);
       console.log(`Delivered      : ${chalk.green(data.delivered)}`);

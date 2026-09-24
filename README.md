@@ -169,5 +169,27 @@ HookArmor solves this automatically:
 
 ---
 
+## 🔐 Production Security & Admin Authentication
+
+When running HookArmor locally on your laptop (`localhost`), management endpoints and the replay dashboard operate without authentication for fast developer onboarding.
+
+> [!WARNING]
+> **When deploying HookArmor to a public server or self-hosted cloud container (Railway, Render, VPS), you MUST set the `HOOKARMOR_API_KEY` environment variable.**
+
+```bash
+# Generate a strong 256-bit random key
+openssl rand -hex 32
+
+# Set in your production environment / Docker container:
+HOOKARMOR_API_KEY=ha_sec_your_secure_random_key_here
+```
+
+When `HOOKARMOR_API_KEY` is present:
+* Management endpoints (`/api/endpoints`, `/api/events/replay-all`, and waitlist exports) strictly reject unauthenticated requests and require an `Authorization: Bearer <key>` header.
+* Query parameter authentication (`?api_key=...`) is strictly prohibited to avoid leaking tokens into browser history and proxy access logs.
+* The web dashboard displays an **Admin Login** prompt storing your key only in ephemeral session memory.
+
+---
+
 ## 📄 License
 MIT License. Created by the HookArmor Team.

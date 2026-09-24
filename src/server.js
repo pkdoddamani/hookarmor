@@ -322,39 +322,44 @@ function createServer(options = {}) {
   // SEO & Web Crawler Discovery
   app.get('/robots.txt', (req, res) => {
     res.type('text/plain');
-    res.sendFile(path.join(__dirname, 'public', 'robots.txt'));
+    res.sendFile('robots.txt', { root: path.join(__dirname, 'public') });
   });
 
   app.get('/sitemap.xml', (req, res) => {
     res.type('application/xml');
-    res.sendFile(path.join(__dirname, 'public', 'sitemap.xml'));
+    res.sendFile('sitemap.xml', { root: path.join(__dirname, 'public') });
   });
 
   app.get('/og-preview.png', (req, res) => {
     res.type('image/png');
-    res.sendFile(path.join(__dirname, 'public', 'og-preview.png'));
+    res.sendFile('og-preview.png', { root: path.join(__dirname, 'public') });
   });
 
-  // Landing Page Route
+  // Root Route: Dashboard if run locally via CLI; Landing page on cloud deployment
   app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'landing.html'));
+    const isCloudProduction = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.NODE_ENV === 'production');
+    if (!isCloudProduction) {
+      return res.sendFile('index.html', { root: path.join(__dirname, 'public') });
+    }
+    res.sendFile('landing.html', { root: path.join(__dirname, 'public') });
   });
 
   // Interactive Dashboard Routes
   app.get(['/dashboard', '/app'], (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile('index.html', { root: path.join(__dirname, 'public') });
   });
 
   // Engineering Blog Routes
   app.get('/blog', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'blog', 'index.html'));
+    res.sendFile('index.html', { root: path.join(__dirname, 'public', 'blog') });
   });
 
   app.get('/blog/:slug', (req, res) => {
     const slug = req.params.slug.replace(/[^a-zA-Z0-9-_]/g, '');
-    const filePath = path.join(__dirname, 'public', 'blog', `${slug}.html`);
+    const fileName = `${slug}.html`;
+    const filePath = path.join(__dirname, 'public', 'blog', fileName);
     if (fs.existsSync(filePath)) {
-      return res.sendFile(filePath);
+      return res.sendFile(fileName, { root: path.join(__dirname, 'public', 'blog') });
     }
     res.redirect('/blog');
   });
