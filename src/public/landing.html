@@ -11,14 +11,18 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://hookarmour.dev/">
   <meta property="og:title" content="HookArmor - Never Lose a Stripe or Shopify Webhook Again">
-  <meta property="og:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+  <meta property="og:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), instant buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
   <meta property="og:site_name" content="HookArmor">
+  <meta property="og:image" content="https://hookarmour.dev/og-preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
 
   <!-- Twitter / X -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://hookarmour.dev/">
   <meta name="twitter:title" content="HookArmor - Never Lose a Stripe or Shopify Webhook Again">
-  <meta name="twitter:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+  <meta name="twitter:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), instant buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+  <meta name="twitter:image" content="https://hookarmour.dev/og-preview.png">
 
   <!-- JSON-LD Structured Data for Google Rich Snippets -->
   <script type="application/ld+json">
@@ -332,7 +336,7 @@
 
   <nav>
     <a href="#" class="logo">
-      <span>🛡️</span> HookArmor <span class="badge-v1">v1.0 Production</span>
+      <span>🛡️</span> HookArmor <span class="badge-v1">Open Source Beta</span>
     </a>
     <div class="nav-cta">
       <a href="/blog" class="btn btn-outline">Blog</a>
@@ -346,7 +350,7 @@
     <div class="pill">⚡ Tested & Verified Across 5 Failover Scenarios</div>
     <h1>Never Lose a <span class="gradient-text">Stripe or Shopify</span> Webhook Again.</h1>
     <p>
-      Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay engine.
+      Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), fast ingress buffer, and 1-click replay engine.
     </p>
 
     <!-- Waitlist Capture Form -->
@@ -367,9 +371,14 @@
       </div>
     </div>
 
-    <div class="terminal-box">
-      <span>$ npx hookarmor start</span>
-      <button class="copy-btn" onclick="navigator.clipboard.writeText('npx hookarmor start')">Copy</button>
+    <div class="terminal-box" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; width: 100%; max-width: 620px;">
+      <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+        <span style="font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-sans); font-weight: 600;">Self-Host Quickstart (Zero Dependencies)</span>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('git clone https://github.com/pkdoddamani/hookarmor.git && cd hookarmor && npm install && npm start')">Copy</button>
+      </div>
+      <div style="color: #38bdf8; font-size: 0.85rem; word-break: break-all;">
+        $ git clone https://github.com/pkdoddamani/hookarmor.git && cd hookarmor && npm start
+      </div>
     </div>
 
     <div class="hero-actions">
@@ -413,7 +422,7 @@
     <div class="grid-3">
       <div class="card">
         <div class="card-icon" style="background: rgba(59, 130, 246, 0.1); color: #60a5fa;">⚡</div>
-        <h3>Sub-10ms Ingress Buffer</h3>
+        <h3>Fast Ingress Buffer (&lt;15ms)</h3>
         <p>
           Returns an instant <code>200 OK</code> to Stripe, Shopify, or Clerk immediately upon receipt. Payment gateways never enter backoff retry purgatory or mark endpoints dead.
         </p>
@@ -431,7 +440,7 @@
         <div class="card-icon" style="background: rgba(16, 185, 129, 0.1); color: #34d399;">🔄</div>
         <h3>1-Click Bulk Replay</h3>
         <p>
-          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> in the dashboard or run <code>npx hookarmor replay --failed</code> to restore customer subscriptions in 2 seconds.
+          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> in the dashboard or run <code>node bin/hookarmor.js replay --failed</code> to restore customer subscriptions in 2 seconds.
         </p>
       </div>
 
@@ -455,7 +464,7 @@
         <div class="card-icon" style="background: rgba(56, 189, 248, 0.1); color: #38bdf8;">💻</div>
         <h3>Zero-Friction Local Tunnel</h3>
         <p>
-          Run <code>npx hookarmor listen http://localhost:3000/api/webhook</code> to test production events against your local IDE with hot reloading and zero ngrok hassles.
+          Run <code>node bin/hookarmor.js listen http://localhost:3000/api/webhook</code> to test production events against your local IDE with hot reloading and zero ngrok hassles.
         </p>
       </div>
     </div>
@@ -471,7 +480,7 @@
       <div class="pricing-card">
         <h3>Self-Hosted</h3>
         <div class="price">$0 <span>/ forever</span></div>
-        <p style="color: var(--text-muted); font-size: 0.85rem;">Open source CLI & engine for local dev and self-hosting.</p>
+        <p style="color: var(--text-muted); font-size: 0.85rem;">Open source engine & dashboard for local dev and self-hosting.</p>
         <ul class="feature-list">
           <li>✓ Full SQLite DLQ & Ingress Engine</li>
           <li>✓ Web Dashboard & Inspector</li>
@@ -507,8 +516,8 @@
           <li>✓ <strong>90-day retention</strong> in DLQ</li>
           <li>✓ Unlimited Endpoints</li>
           <li>✓ Automated Circuit Breakers</li>
-          <li>✓ Multi-team Access</li>
-          <li>✓ Priority Global Ingress Edge</li>
+          <li>✓ Team Workspaces (Beta Roadmap)</li>
+          <li>✓ High-Concurrency Queue Worker</li>
         </ul>
         <a href="#waitlist-form" onclick="focusWaitlist();" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
       </div>

@@ -330,6 +330,11 @@ function createServer(options = {}) {
     res.sendFile(path.join(__dirname, 'public', 'sitemap.xml'));
   });
 
+  app.get('/og-preview.png', (req, res) => {
+    res.type('image/png');
+    res.sendFile(path.join(__dirname, 'public', 'og-preview.png'));
+  });
+
   // Landing Page Route
   app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'landing.html'));
