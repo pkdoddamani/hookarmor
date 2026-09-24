@@ -6,7 +6,8 @@ data
 *.db-shm
 *.tgz
 .env*
-namecom_creds.txt
+*creds*
+*credentials*
 scratch_*
 *_response.*
 run_advisors.*
