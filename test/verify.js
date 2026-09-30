@@ -176,9 +176,16 @@ async function runTests() {
       .update(`${forwardedTimestamp}.${delayedPayload}`)
       .digest('hex');
     assert.strictEqual(forwardedSigParts.v1, expectedFreshSig, 'Fresh signature must be mathematically valid HMAC');
+
+    // Verify provenance metadata headers for state reconciliation & audit trace
+    assert.strictEqual(capturedHeaders['x-hookarmor-is-replay'], 'true', 'Must mark replayed event with x-hookarmor-is-replay: true');
+    assert.ok(capturedHeaders['x-hookarmor-original-timestamp'], 'Must include original timestamp');
+    assert.ok(capturedHeaders['x-hookarmor-original-stripe-signature'], 'Must preserve original Stripe signature for audit trail');
+
     console.log('  ✅ HookArmor defeated the 5-minute Stripe expiration trap:');
     console.log(`     Stored in DB: t=${ancientTimestamp} (Expired 5+ years ago)`);
-    console.log(`     Re-signed on replay: t=${forwardedTimestamp} (Current) -> stripe.webhooks.constructEvent succeeds!\n`);
+    console.log(`     Re-signed on replay: t=${forwardedTimestamp} (Current) -> stripe.webhooks.constructEvent succeeds!`);
+    console.log(`     Provenance verified: is-replay=${capturedHeaders['x-hookarmor-is-replay']}, orig-sig preserved.\n`);
 
     // 4. Downstream Failure -> Dead-Letter Queue
     console.log('Test 4: Simulating Downstream Failure (500) -> Dead-Letter Queue...');

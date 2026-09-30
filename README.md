@@ -153,6 +153,63 @@ HookArmor solves this automatically:
 
 ---
 
+## 🛡️ Provenance Headers & Out-of-Order Replay Protection
+
+When replaying dead-letter events hours or days later, applying payloads out of order can accidentally clobber newer database state (e.g., an older `customer.subscription.updated` event overwriting a newer cancellation).
+
+To protect downstream handlers against state drift, HookArmor injects explicit provenance headers on every forward and replay:
+
+* `x-hookarmor-delivery-id`: Unique HookArmor event delivery ID.
+* `x-hookarmor-attempt`: Current delivery attempt number (e.g., `1` on initial, `2+` on retries).
+* `x-hookarmor-original-timestamp`: The exact ISO-8601 timestamp when the webhook originally arrived at the ingress edge.
+* `x-hookarmor-is-replay`: Set to `'true'` during automated retries and manual dashboard replays (`'false'` on initial delivery).
+* `x-hookarmor-original-stripe-signature`: Preserves the authentic original Stripe signature for audit logs and forensic verification.
+
+**Recommended Downstream Handler Pattern:**
+```javascript
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), (req, res) => {
+  // Standard verification passes 100% of the time
+  const event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], endpointSecret);
+
+  // If this is a replay, verify you are not clobbering newer database state:
+  if (req.headers['x-hookarmor-is-replay'] === 'true') {
+    const originalTime = new Date(req.headers['x-hookarmor-original-timestamp']).getTime();
+    // Fetch latest object from Stripe API or check if local DB already has a newer updated_at timestamp
+  }
+
+  res.json({ received: true });
+});
+```
+
+---
+
+## 🏛️ Dual Trust Boundaries: Transparent vs. Isolated Mode
+
+HookArmor supports two forwarding architectures depending on your team's security posture:
+
+1. **Mode A: Transparent Proxy (Default · Zero Code Changes)**
+   * HookArmor re-signs the outbound request using your provider secret with `t=now`.
+   * Your existing application code (`stripe.webhooks.constructEvent()`) runs unmodified.
+   * Original signatures are preserved in `x-hookarmor-original-stripe-signature`.
+
+2. **Mode B: Isolated Trust Boundary (Enterprise Security)**
+   * Set the `HOOKARMOR_SIGNING_SECRET` environment variable.
+   * HookArmor attaches an isolated `x-hookarmor-signature: t=..., v1=...` HMAC header using your internal secret.
+   * Downstream handlers verify HookArmor as the internal sender, maintaining strict separation between external Stripe signatures and internal relay deliveries.
+
+---
+
+## ⚠️ Production Durability: The Early 200 OK Tradeoff
+
+HookArmor returns an immediate `200 OK` to Stripe and Shopify in `<10ms` to protect your ingress latency and prevent providers from marking your endpoint failed during downstream outages.
+
+**What this means for production operators:**
+* Once HookArmor returns `200 OK`, Stripe considers the webhook delivered and **halts its external retry backup**.
+* HookArmor's embedded SQLite database assumes **sole custody** of that event.
+* **Persistent storage is mandatory:** When deploying via Docker, you must mount the data volume (`-v $(pwd)/data:/app/data`) and ensure host-level backups are active.
+
+---
+
 ## 📦 Hosted Cloud & Self-Hosting
 
 | Feature | Self-Hosted (MIT) | Hosted Cloud Starter ($29/mo) | Hosted Cloud Pro ($79/mo) |

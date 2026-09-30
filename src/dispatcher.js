@@ -164,9 +164,25 @@ class Dispatcher extends EventEmitter {
 
     let headers = { ...event.headers };
 
-    // Re-sign outbound headers if endpoint secret is configured
+    // Preserve original raw signatures before re-signing for audit and forensic trace
+    if (event.headers && event.headers['stripe-signature']) {
+      headers['x-hookarmor-original-stripe-signature'] = event.headers['stripe-signature'];
+    }
+    if (event.headers && event.headers['x-shopify-hmac-sha256']) {
+      headers['x-hookarmor-original-shopify-hmac'] = event.headers['x-shopify-hmac-sha256'];
+    }
+
+    // Re-sign outbound headers if endpoint secret is configured (Transparent Zero-Code-Change Mode)
     if (endpoint.secret) {
       headers = this.signHeaders(event.provider, event.raw_body, headers, endpoint.secret);
+    }
+
+    // Optional Isolated Trust Domain mode: if HOOKARMOR_SIGNING_SECRET is provided
+    const internalSecret = process.env.HOOKARMOR_SIGNING_SECRET || endpoint.internal_secret;
+    if (internalSecret) {
+      const freshTs = Math.floor(Date.now() / 1000);
+      const internalSig = crypto.createHmac('sha256', internalSecret).update(`${freshTs}.${event.raw_body}`).digest('hex');
+      headers['x-hookarmor-signature'] = `t=${freshTs},v1=${internalSig}`;
     }
 
     // Remove hop-by-hop and encoding headers
@@ -180,6 +196,9 @@ class Dispatcher extends EventEmitter {
     headers['content-length'] = rawBuffer.length;
     headers['x-hookarmor-delivery-id'] = event.id;
     headers['x-hookarmor-attempt'] = String(event.attempts + 1);
+    headers['x-hookarmor-original-timestamp'] = event.created_at;
+    const isReplay = (event.attempts > 0 || event.status === 'replaying');
+    headers['x-hookarmor-is-replay'] = isReplay ? 'true' : 'false';
 
     return new Promise((resolve) => {
       try {
