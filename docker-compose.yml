@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   hookarmor:
+    image: ghcr.io/pkdoddamani/hookarmor:latest
     build: .
     container_name: hookarmor
     restart: unless-stopped

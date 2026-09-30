@@ -16,7 +16,7 @@ program
 program
   .command('start')
   .description('Start HookArmor server with web dashboard and ingress proxy')
-  .option('-p, --port <number>', 'Port to listen on', '4000')
+  .option('-p, --port <number>', 'Port to listen on', process.env.PORT || '4000')
   .action((options) => {
     const port = parseInt(options.port, 10);
     const { server, storage } = createServer();
