@@ -10,7 +10,7 @@ const Storage = require('./storage');
 const Dispatcher = require('./dispatcher');
 const RetryWorker = require('./worker');
 
-function isPrivateOrMetadataUrl(urlString) {
+function isPrivateOrMetadataUrl(urlString, strictSSRF = false) {
   try {
     const parsed = new URL(urlString);
     const hostname = parsed.hostname.toLowerCase();
@@ -21,6 +21,19 @@ function isPrivateOrMetadataUrl(urlString) {
       hostname.startsWith('169.254.')
     ) {
       return true;
+    }
+    if (strictSSRF) {
+      if (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '::1' ||
+        hostname === '0.0.0.0' ||
+        hostname.startsWith('10.') ||
+        hostname.startsWith('192.168.') ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
+      ) {
+        return true;
+      }
     }
     return false;
   } catch (e) {
@@ -186,22 +199,32 @@ function createServer(options = {}) {
   // REST API: JSON Body Parser for Dashboard / Management
   app.use(express.json());
 
-  // Management API Authentication Middleware (optional, active when HOOKARMOR_API_KEY is configured)
+  // Management API Authentication Middleware (active when HOOKARMOR_API_KEY is configured)
   const apiKey = options.apiKey || process.env.HOOKARMOR_API_KEY || null;
+  const isDemoMode = options.demoMode !== undefined 
+    ? options.demoMode 
+    : (process.env.HOOKARMOR_DEMO_MODE === 'true');
+  const strictSSRF = options.strictSSRF !== undefined
+    ? options.strictSSRF
+    : (process.env.HOOKARMOR_STRICT_SSRF === 'true');
+
   app.use('/api', (req, res, next) => {
     // Keep public waitlist signup open for landing page
     if (req.path === '/waitlist' && req.method === 'POST') return next();
 
-    // Allow public read-only demo access & replay simulation so prospective users can explore live
-    const isPublicDemo =
-      (req.method === 'GET' && (req.path === '/stats' || req.path === '/endpoints' || req.path === '/events' || /^\/events\/[^\/]+$/.test(req.path))) ||
-      (req.method === 'POST' && (req.path === '/events/replay-all' || /^\/events\/[^\/]+\/replay$/.test(req.path)));
+    // If apiKey is NOT configured and demo mode is NOT forced, allow open local dev access
+    if (!apiKey && !isDemoMode) return next();
 
-    if (isPublicDemo) return next();
+    // If explicit demo mode is active (e.g. public marketing demo sandbox), allow read-only & replay simulation
+    if (isDemoMode) {
+      const isPublicDemo =
+        (req.method === 'GET' && (req.path === '/stats' || req.path === '/endpoints' || req.path === '/events' || /^\/events\/[^\/]+$/.test(req.path))) ||
+        (req.method === 'POST' && (req.path === '/events/replay-all' || /^\/events\/[^\/]+\/replay$/.test(req.path)));
 
-    if (!apiKey) return next();
+      if (isPublicDemo) return next();
+    }
 
-    // Accept API token strictly via Authorization or X-Api-Key headers (NEVER query string URL)
+    // When apiKey is configured (production mode), strictly require authentication
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers['x-api-key'] || '';
     if (!token || token !== apiKey) {
@@ -226,8 +249,8 @@ function createServer(options = {}) {
     if (!id || !name || !targetUrl) {
       return res.status(400).json({ error: 'id, name, and targetUrl are required' });
     }
-    if (isPrivateOrMetadataUrl(targetUrl)) {
-      return res.status(400).json({ error: 'targetUrl cannot target cloud metadata or link-local addresses (SSRF blocked)' });
+    if (isPrivateOrMetadataUrl(targetUrl, strictSSRF)) {
+      return res.status(400).json({ error: 'targetUrl cannot target cloud metadata or private network addresses (SSRF blocked)' });
     }
     const endpoint = storage.createEndpoint({
       id,

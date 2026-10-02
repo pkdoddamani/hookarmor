@@ -300,7 +300,49 @@ async function runTests() {
     assert.strictEqual(secondBody.hookarmor_id, firstBody.hookarmor_id);
     console.log('  ✅ Duplicate event intercepted and suppressed cleanly.\n');
 
-    console.log('🎉 ALL 7 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!\n');
+    // 8. Auth Protection & API Key Enforcement (Post-Audit Fix)
+    console.log('Test 8: Testing API Key Authentication & Route Lockdown...');
+    const authPort = 4997;
+    const authServerObj = createServer({
+      dbPath: ':memory:',
+      apiKey: 'vault_test_key_999'
+    });
+    await new Promise(r => authServerObj.server.listen(authPort, '127.0.0.1', r));
+    const authBaseUrl = `http://127.0.0.1:${authPort}`;
+
+    try {
+      // A. Unauthenticated GET /api/events must return 401
+      const unauthEvents = await fetch(`${authBaseUrl}/api/events`);
+      assert.strictEqual(unauthEvents.status, 401, 'Unauthenticated GET /api/events must be rejected with 401');
+
+      // B. Unauthenticated POST /api/events/replay-all must return 401
+      const unauthReplay = await fetch(`${authBaseUrl}/api/events/replay-all`, { method: 'POST' });
+      assert.strictEqual(unauthReplay.status, 401, 'Unauthenticated POST /api/events/replay-all must be rejected with 401');
+
+      // C. Authenticated with Bearer token must return 200
+      const authEvents = await fetch(`${authBaseUrl}/api/events`, {
+        headers: { 'Authorization': 'Bearer vault_test_key_999' }
+      });
+      assert.strictEqual(authEvents.status, 200, 'Authenticated request with Bearer token must return 200');
+
+      // D. Authenticated with x-api-key must return 200
+      const authApiKey = await fetch(`${authBaseUrl}/api/events`, {
+        headers: { 'x-api-key': 'vault_test_key_999' }
+      });
+      assert.strictEqual(authApiKey.status, 200, 'Authenticated request with x-api-key must return 200');
+
+      // E. Ingress endpoint /in/:id remains open without API key
+      const openIngress = await fetch(`${authBaseUrl}/in/non-existent`, { method: 'POST' });
+      assert.strictEqual(openIngress.status, 404, 'Ingress endpoint must stay open for incoming webhook traffic');
+
+      console.log('  ✅ Unauthenticated reads and replays rejected with 401.');
+      console.log('  ✅ Bearer token and x-api-key headers validated with 200.');
+      console.log('  ✅ Ingress gateway remains open for external webhook providers.\n');
+    } finally {
+      authServerObj.server.close();
+    }
+
+    console.log('🎉 ALL 8 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!\n');
   } finally {
     captureServer.close();
     server.close();

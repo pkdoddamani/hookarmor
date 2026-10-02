@@ -11,7 +11,7 @@ const program = new Command();
 program
   .name('hookarmor')
   .description('🛡️ HookArmor: Webhook Dead-Letter Queue & Replay Sentinel')
-  .version('1.0.0');
+  .version('1.0.3');
 
 program
   .command('start')

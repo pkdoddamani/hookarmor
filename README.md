@@ -3,8 +3,8 @@
 > **Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-7%20Passing-brightgreen.svg)]()
-[![Status: Production Ready](https://img.shields.io/badge/Status-v1.0.0-blueviolet.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-8%20Passing-brightgreen.svg)]()
+[![Status: Production Ready](https://img.shields.io/badge/Status-v1.0.3-blueviolet.svg)]()
 
 ---
 
@@ -102,7 +102,7 @@ npx hookarmor replay evt_1758513516086_m8r0e7
 
 ## 📊 Verification Test Suite
 
-HookArmor includes a 7-scenario automated verification test suite covering edge cases, replay re-signing, and pool protection:
+HookArmor includes an 8-scenario automated verification test suite covering edge cases, replay re-signing, and pool protection:
 ```bash
 npm test
 ```
@@ -120,7 +120,8 @@ Test 2: Testing Ingress Signature Verification (Security Boundary)...
 Test 3: Testing 5-Minute Expiration Defeat (Fresh Outbound Re-Signing)...
   ✅ HookArmor defeated the 5-minute Stripe expiration trap:
      Stored in DB: t=1600000000 (Expired 5+ years ago)
-     Re-signed on replay: t=1790143178 (Current) -> stripe.webhooks.constructEvent succeeds!
+     Re-signed on replay: t=1790970445 (Current) -> stripe.webhooks.constructEvent succeeds!
+     Provenance verified: is-replay=true, orig-sig preserved.
 
 Test 4: Simulating Downstream Failure (500) -> Dead-Letter Queue...
   ✅ Event safely quarantined in Dead-Letter Queue with HTTP 500.
@@ -135,7 +136,12 @@ Test 6: Testing Concurrency Limiting (Pool Protection)...
 Test 7: Testing Safe Idempotency Key Deduplication...
   ✅ Duplicate event intercepted and suppressed cleanly.
 
-🎉 ALL 7 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!
+Test 8: Testing API Key Authentication & Route Lockdown...
+  ✅ Unauthenticated reads and replays rejected with 401.
+  ✅ Bearer token and x-api-key headers validated with 200.
+  ✅ Ingress gateway remains open for external webhook providers.
+
+🎉 ALL 8 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!
 ```
 
 ---
@@ -242,7 +248,9 @@ HOOKARMOR_API_KEY=ha_sec_your_secure_random_key_here
 ```
 
 When `HOOKARMOR_API_KEY` is present:
-* Management endpoints (`/api/endpoints`, `/api/events/replay-all`, and waitlist exports) strictly reject unauthenticated requests and require an `Authorization: Bearer <key>` header.
+* All management and inspection endpoints (`/api/stats`, `/api/endpoints`, `/api/events`, `/api/events/:id/replay`, `/api/events/replay-all`) strictly reject unauthenticated requests with `401 Unauthorized` and require `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
+* Ingress webhook receiving (`/in/:endpointId`) and public waitlist signups remain open for incoming traffic.
+* Public read-only demo access can only be enabled if explicitly running with `HOOKARMOR_DEMO_MODE=true` (for isolated marketing sandboxes).
 * Query parameter authentication (`?api_key=...`) is strictly prohibited to avoid leaking tokens into browser history and proxy access logs.
 * The web dashboard displays an **Admin Login** prompt storing your key only in ephemeral session memory.
 
