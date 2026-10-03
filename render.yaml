@@ -3,6 +3,7 @@ services:
     name: hookarmor
     env: docker
     dockerfilePath: Dockerfile
+    # Persistent disks require a paid instance; on the free plan events would be lost on every restart
     plan: starter
     region: oregon
     envVars:

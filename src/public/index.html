@@ -524,6 +524,10 @@
               <label>Discord / Slack Alert Webhook</label>
               <input type="text" id="inp-ep-alert" class="form-control" placeholder="https://discord.com/api/webhooks/...">
             </div>
+            <div class="form-group">
+              <label>Provider Signing Secret (optional; leave blank to keep the current one)</label>
+              <input type="password" id="inp-ep-secret" class="form-control" placeholder="whsec_..." autocomplete="off">
+            </div>
             <button class="btn btn-primary btn-sm" onclick="saveEndpoint()">Save Endpoint</button>
           </div>
 
@@ -677,9 +681,9 @@
     let cachedLeads = [];
     let ws = null;
 
-    function esc(str) {
-      if (str === null || str === undefined) return '';
-      return String(str)
+    // Escape untrusted values (webhook payloads, headers, target responses, signups) before HTML insertion
+    function esc(value) {
+      return String(value === undefined || value === null ? '' : value)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
@@ -687,13 +691,11 @@
         .replace(/'/g, '&#39;');
     }
 
-    function sanitizeCsvCell(val) {
-      if (val === null || val === undefined) return '""';
-      let str = String(val);
-      if (/^[=+\-@]/.test(str)) {
-        str = "'" + str;
-      }
-      return `"${str.replace(/"/g, '""')}"`;
+    // CSV cell: quote, double inner quotes, and neutralise spreadsheet formula prefixes (=+-@)
+    function csvCell(value) {
+      let v = String(value === undefined || value === null ? '' : value);
+      if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+      return `"${v.replace(/"/g, '""')}"`;
     }
 
     function getApiKey() {
@@ -750,6 +752,10 @@
       if (key && key.trim()) {
         sessionStorage.setItem('ha_admin_session', key.trim());
         updateAdminUI();
+        if (ws) ws.close();
+        loadEndpoints();
+        loadStats();
+        loadEvents();
       }
     }
 
@@ -788,7 +794,7 @@
         alert('No leads to export.');
         return;
       }
-      const csvContent = 'id,email,source,created_at\n' + cachedLeads.map(l => `${l.id},${sanitizeCsvCell(l.email)},${sanitizeCsvCell(l.source)},${sanitizeCsvCell(l.created_at)}`).join('\n');
+      const csvContent = 'id,email,source,created_at\n' + cachedLeads.map(l => [l.id, l.email, l.source, l.created_at].map(csvCell).join(',')).join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -895,11 +901,12 @@
         container.innerHTML = cachedEndpoints.map(ep => `
           <div class="endpoint-item">
             <div class="endpoint-name">${esc(ep.name)}</div>
-            <div class="endpoint-url" title="Ingress URL">${window.location.origin}/in/${esc(ep.id)}</div>
+            <div class="endpoint-url" title="Ingress URL">${esc(window.location.origin)}/in/${esc(ep.id)}</div>
             <div class="target-url">🎯 <strong>Target:</strong> ${esc(ep.target_url)}</div>
             <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.75rem;">
               <span>Auto-Retry: <strong>${ep.auto_retry ? 'Yes' : 'No'}</strong></span>
               <span>Max: <strong>${esc(ep.max_retries)} attempts</strong></span>
+              <span>Signed: <strong>${ep.has_secret ? 'Yes' : 'No'}</strong></span>
             </div>
           </div>
         `).join('');
@@ -915,7 +922,7 @@
     async function loadEvents() {
       try {
         let url = '/api/events?limit=50';
-        if (currentFilter) url += `&status=${currentFilter}`;
+        if (currentFilter) url += `&status=${encodeURIComponent(currentFilter)}`;
         const res = await fetch(url, { headers: getAuthHeaders() });
         const events = await res.json();
         const tbody = document.getElementById('events-table-body');
@@ -935,13 +942,13 @@
           const badgeClass = evt.status === 'delivered' ? 'badge-delivered' : (evt.status === 'failed' ? 'badge-failed' : 'badge-pending');
           const time = new Date(evt.created_at).toLocaleTimeString();
           const latency = evt.last_latency_ms ? `${evt.last_latency_ms}ms` : '-';
-          const providerClass = evt.provider && evt.provider.includes('stripe') ? 'stripe' : (evt.provider && evt.provider.includes('shopify') ? 'shopify' : (evt.provider && evt.provider.includes('github') ? 'github' : ''));
+          const providerClass = String(evt.provider || '').includes('stripe') ? 'stripe' : (evt.provider.includes('shopify') ? 'shopify' : (evt.provider.includes('github') ? 'github' : ''));
 
           return `
             <tr>
-              <td><span class="badge ${esc(badgeClass)}">${esc(evt.status)}</span></td>
+              <td><span class="badge ${badgeClass}">${esc(evt.status)}</span></td>
               <td>
-                <span class="badge-provider ${esc(providerClass)}">${esc(evt.provider)}</span>
+                <span class="badge-provider ${providerClass}">${esc(evt.provider)}</span>
                 <span style="font-weight: 600; margin-left: 0.35rem;">${esc(evt.event_type || evt.id)}</span>
               </td>
               <td><span class="code-mono" style="color: var(--text-muted);">${esc(evt.endpoint_id)}</span></td>
@@ -949,8 +956,8 @@
               <td><span class="code-mono">${esc(evt.attempts)}</span></td>
               <td style="color: var(--text-muted);">${esc(time)}</td>
               <td style="display: flex; gap: 0.5rem;">
-                <button class="btn btn-secondary btn-sm" onclick="inspectEvent('${esc(evt.id)}')">Inspect</button>
-                <button class="btn btn-primary btn-sm" onclick="replayEvent('${esc(evt.id)}')">Replay</button>
+                <button class="btn btn-secondary btn-sm" data-action="inspect" data-id="${esc(evt.id)}">Inspect</button>
+                <button class="btn btn-primary btn-sm" data-action="replay" data-id="${esc(evt.id)}">Replay</button>
               </td>
             </tr>
           `;
@@ -977,6 +984,7 @@
       const name = document.getElementById('inp-ep-name').value.trim();
       const targetUrl = document.getElementById('inp-ep-target').value.trim();
       const alertWebhookUrl = document.getElementById('inp-ep-alert').value.trim();
+      const secret = document.getElementById('inp-ep-secret').value.trim();
 
       if (!id || !name || !targetUrl) {
         alert('Please fill out ID, Name, and Target URL');
@@ -986,13 +994,19 @@
       const res = await fetch('/api/endpoints', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ id, name, targetUrl, alertWebhookUrl, autoRetry: 1, maxRetries: 5 })
+        body: JSON.stringify({ id, name, targetUrl, alertWebhookUrl, autoRetry: 1, maxRetries: 5, ...(secret ? { secret } : {}) })
       });
 
       if (res.status === 401) {
         alert('Admin authorization required to create endpoints. Please click "Admin Login" in top right.');
         return;
       }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(`Could not save endpoint: ${data.error || 'HTTP ' + res.status}`);
+        return;
+      }
+      document.getElementById('inp-ep-secret').value = '';
 
       toggleNewEndpointForm();
       await loadEndpoints();
@@ -1000,9 +1014,11 @@
 
     async function replayEvent(id) {
       try {
-        const res = await fetch(`/api/events/${id}/replay`, { method: 'POST', headers: getAuthHeaders() });
+        const res = await fetch(`/api/events/${encodeURIComponent(id)}/replay`, { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }), body: '{}' });
         const data = await res.json();
-        if (data.success) {
+        if (!res.ok) {
+          alert(`Replay not started: ${data.error || 'HTTP ' + res.status}`);
+        } else if (data.success) {
           alert(`✅ Event ${id} successfully replayed! (HTTP ${data.statusCode})`);
         } else {
           alert(`❌ Replay attempted: Destination returned HTTP ${data.statusCode} (${data.errorMessage || 'Failed'})`);
@@ -1017,9 +1033,14 @@
     async function replayAllFailed() {
       if (!confirm('Replay all failed Dead-Letter Queue events now?')) return;
       try {
-        const res = await fetch('/api/events/replay-all', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }) });
+        const res = await fetch('/api/events/replay-all', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }), body: '{}' });
         const data = await res.json();
-        alert(`🔄 Dispatched replay for ${data.replayedCount} dead-letter events.`);
+        if (!res.ok) {
+          alert(`Bulk replay not started: ${data.error || 'HTTP ' + res.status}`);
+          return;
+        }
+        const more = data.remaining > 0 ? ` (${data.remaining} more still queued; run again to continue)` : '';
+        alert(`🔄 Dispatched replay for ${data.replayedCount} dead-letter events.${more}`);
         await loadEvents();
         await loadStats();
       } catch (e) {
@@ -1029,25 +1050,29 @@
 
     async function inspectEvent(id) {
       try {
-        const res = await fetch(`/api/events/${id}`, { headers: getAuthHeaders() });
+        const res = await fetch(`/api/events/${encodeURIComponent(id)}`, { headers: getAuthHeaders() });
         const evt = await res.json();
-        document.getElementById('modal-event-title').textContent = `Inspection: ${esc(evt.id)}`;
+        document.getElementById('modal-event-title').textContent = `Inspection: ${evt.id}`;
         
         let attemptsHtml = '<p style="color: var(--text-muted); font-size: 0.85rem;">No attempts recorded.</p>';
         if (evt.attempts && evt.attempts.length > 0) {
-          attemptsHtml = evt.attempts.map((att, i) => `
+          attemptsHtml = evt.attempts.map((att, i) => {
+            const errorHtml = att.error_message ? `<div style="color: var(--accent-rose); margin-top: 0.25rem;">${esc(att.error_message)}</div>` : '';
+            const bodyHtml = att.response_body ? `<div class="code-block" style="margin-top: 0.5rem; max-height: 120px;">${esc(att.response_body)}</div>` : '';
+            return `
             <div style="background: #090d16; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.8rem;">
               <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
-                <strong>Attempt #${esc(evt.attempts.length - i)}</strong>
+                <strong>Attempt #${evt.attempts.length - i}</strong>
                 <span class="badge ${att.status_code >= 200 && att.status_code < 300 ? 'badge-delivered' : 'badge-failed'}">
                   HTTP ${esc(att.status_code || 'Err')} (${esc(att.latency_ms)}ms)
                 </span>
               </div>
               <div style="color: var(--text-muted);">${esc(att.attempted_at)}</div>
-              ${att.error_message ? `<div style="color: var(--accent-rose); margin-top: 0.25rem;">${esc(att.error_message)}</div>` : ''}
-              ${att.response_body ? `<div class="code-block" style="margin-top: 0.5rem; max-height: 120px;">${esc(att.response_body)}</div>` : ''}
+              ${errorHtml}
+              ${bodyHtml}
             </div>
-          `).join('');
+          `;
+          }).join('');
         }
 
         document.getElementById('modal-event-body').innerHTML = `
@@ -1074,7 +1099,7 @@
 
           <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
             <button class="btn btn-secondary" onclick="closeInspectorModal()">Close</button>
-            <button class="btn btn-primary" onclick="replayEvent('${esc(evt.id)}')">Replay Event</button>
+            <button class="btn btn-primary" data-action="replay" data-id="${esc(evt.id)}">Replay Event</button>
           </div>
         `;
         document.getElementById('inspector-modal').style.display = 'flex';
@@ -1123,7 +1148,7 @@
       const payloadStr = document.getElementById('sim-payload').value;
 
       try {
-        const res = await fetch(`/in/${epId}`, {
+        const res = await fetch(`/in/${encodeURIComponent(epId)}`, {
           method: 'POST',
           headers,
           body: payloadStr
@@ -1152,10 +1177,8 @@
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
       ws.onopen = () => {
-        const token = getApiKey();
-        if (token) {
-          ws.send(JSON.stringify({ type: 'auth', token }));
-        }
+        const key = getApiKey();
+        if (key) ws.send(JSON.stringify({ type: 'auth', token: key }));
       };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
@@ -1168,6 +1191,14 @@
         setTimeout(initWebSocket, 2000);
       };
     }
+
+    // Event-table and inspector buttons carry ids in data attributes instead of inline handlers
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      if (btn.dataset.action === 'inspect') inspectEvent(btn.dataset.id);
+      if (btn.dataset.action === 'replay') replayEvent(btn.dataset.id);
+    });
 
     // Startup
     window.addEventListener('DOMContentLoaded', async () => {

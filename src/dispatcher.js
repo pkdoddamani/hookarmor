@@ -3,7 +3,22 @@ const https = require('https');
 const crypto = require('crypto');
 const EventEmitter = require('events');
 const Alerter = require('./alerter');
-const { isPrivateOrMetadataUrl, guardedLookup } = require('./ssrf');
+const { checkUrl, guardedLookup } = require('./netguard');
+
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Svix (used by Clerk) secrets are "whsec_" + base64 key bytes
+function svixKey(secret) {
+  return Buffer.from(String(secret).replace(/^whsec_/, ''), 'base64');
+}
+
+function svixSignature(secret, msgId, timestamp, rawBody) {
+  return crypto.createHmac('sha256', svixKey(secret)).update(`${msgId}.${timestamp}.${rawBody}`).digest('base64');
+}
 
 class Dispatcher extends EventEmitter {
   constructor(storage, options = {}) {
@@ -13,59 +28,52 @@ class Dispatcher extends EventEmitter {
     this.inFlightCount = new Map();
     this.waitQueues = new Map();
     this.defaultTimeoutMs = options.defaultTimeoutMs || 25000;
-    this.strictSSRF = options.strictSSRF !== undefined
-      ? options.strictSSRF
-      : (process.env.HOOKARMOR_STRICT_SSRF === 'true');
+    this.strictSSRF = Boolean(options.strictSSRF);
+    this.signingSecret = options.signingSecret || null;
   }
 
-  // Verify signature at ingress (preventing HookArmor from acting as an open signature oracle)
+  // Verify signature at ingress (preventing HookArmor from acting as an open signature oracle).
+  // When a secret is configured, events without a supported signature scheme are rejected.
   static verifyIngressSignature(provider, rawBody, headers, secret, toleranceSec = 300) {
     if (!secret) return { valid: true };
 
     try {
-      if (provider === 'stripe' || headers['stripe-signature']) {
+      if (provider === 'stripe') {
         const sigHeader = headers['stripe-signature'];
         if (!sigHeader) return { valid: false, reason: 'Missing Stripe-Signature header' };
 
-        const v1Signatures = [];
-        let timestamp = null;
+        // Stripe may send several v1 signatures (e.g. while a secret is being rolled)
+        let timestampStr = null;
+        const signatures = [];
         for (const item of sigHeader.split(',')) {
-          const [k, v] = item.split('=');
-          if (k && v) {
-            const key = k.trim();
-            const val = v.trim();
-            if (key === 't') timestamp = parseInt(val, 10);
-            if (key === 'v1') v1Signatures.push(val);
-          }
+          const idx = item.indexOf('=');
+          if (idx === -1) continue;
+          const k = item.slice(0, idx).trim();
+          const v = item.slice(idx + 1).trim();
+          if (k === 't') timestampStr = v;
+          if (k === 'v1' && v) signatures.push(v);
         }
 
-        if (!timestamp || v1Signatures.length === 0) {
-          return { valid: false, reason: 'Malformed Stripe-Signature header' };
-        }
+        if (!timestampStr || signatures.length === 0) return { valid: false, reason: 'Malformed Stripe-Signature header' };
 
+        const timestamp = parseInt(timestampStr, 10);
         const now = Math.floor(Date.now() / 1000);
-        if (Math.abs(now - timestamp) > toleranceSec) {
-          return { valid: false, reason: `Timestamp outside tolerance (${Math.abs(now - timestamp)}s > ${toleranceSec}s)` };
+        if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > toleranceSec) {
+          return { valid: false, reason: `Timestamp outside tolerance (${toleranceSec}s)` };
         }
 
         const expectedSig = crypto
           .createHmac('sha256', secret)
-          .update(`${timestamp}.${rawBody}`)
+          .update(`${timestampStr}.${rawBody}`)
           .digest('hex');
 
-        const expectedBuf = Buffer.from(expectedSig);
-        const matched = v1Signatures.some(sig => {
-          const actualBuf = Buffer.from(sig);
-          return expectedBuf.length === actualBuf.length && crypto.timingSafeEqual(expectedBuf, actualBuf);
-        });
-
-        if (!matched) {
+        if (!signatures.some((sig) => safeEqual(expectedSig, sig))) {
           return { valid: false, reason: 'Signature mismatch' };
         }
         return { valid: true };
       }
 
-      if (provider === 'shopify' || headers['x-shopify-hmac-sha256']) {
+      if (provider === 'shopify') {
         const hmac = headers['x-shopify-hmac-sha256'];
         if (!hmac) return { valid: false, reason: 'Missing X-Shopify-Hmac-Sha256 header' };
 
@@ -74,65 +82,48 @@ class Dispatcher extends EventEmitter {
           .update(rawBody)
           .digest('base64');
 
-        const expectedBuf = Buffer.from(expectedSig);
-        const actualBuf = Buffer.from(hmac);
-        if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+        if (!safeEqual(expectedSig, hmac)) {
           return { valid: false, reason: 'Shopify HMAC mismatch' };
         }
         return { valid: true };
       }
 
-      if (provider === 'github' || headers['x-hub-signature-256']) {
+      if (provider === 'github') {
         const sig = headers['x-hub-signature-256'];
         if (!sig) return { valid: false, reason: 'Missing X-Hub-Signature-256 header' };
 
         const expectedSig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-        const expectedBuf = Buffer.from(expectedSig);
-        const actualBuf = Buffer.from(sig);
-        if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+        if (!safeEqual(expectedSig, sig)) {
           return { valid: false, reason: 'GitHub signature mismatch' };
         }
         return { valid: true };
       }
 
-      if (provider === 'clerk/svix' || headers['svix-id'] || headers['svix-signature'] || headers['clerk-signature']) {
-        const svixId = headers['svix-id'];
-        const svixTimestamp = headers['svix-timestamp'];
-        const svixSigHeader = headers['svix-signature'] || headers['clerk-signature'];
-        if (!svixId || !svixTimestamp || !svixSigHeader) {
-          return { valid: false, reason: 'Missing required Svix/Clerk signature headers (svix-id, svix-timestamp, svix-signature)' };
+      if (provider === 'clerk/svix') {
+        const msgId = headers['svix-id'];
+        const timestampStr = headers['svix-timestamp'];
+        const sigHeader = headers['svix-signature'];
+        if (!msgId || !timestampStr || !sigHeader) {
+          return { valid: false, reason: 'Missing svix-id, svix-timestamp or svix-signature header' };
         }
 
-        const timestamp = parseInt(svixTimestamp, 10);
+        const timestamp = parseInt(timestampStr, 10);
         const now = Math.floor(Date.now() / 1000);
-        if (Math.abs(now - timestamp) > toleranceSec) {
-          return { valid: false, reason: `Timestamp outside tolerance (${Math.abs(now - timestamp)}s > ${toleranceSec}s)` };
+        if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > toleranceSec) {
+          return { valid: false, reason: `Timestamp outside tolerance (${toleranceSec}s)` };
         }
 
-        const secretBytes = secret.startsWith('whsec_')
-          ? Buffer.from(secret.slice(6), 'base64')
-          : Buffer.from(secret, 'utf8');
-
-        const expectedSig = crypto
-          .createHmac('sha256', secretBytes)
-          .update(`${svixId}.${svixTimestamp}.${rawBody}`)
-          .digest('base64');
-        const expectedBuf = Buffer.from(expectedSig);
-
-        const signatures = svixSigHeader.split(' ').map(s => s.startsWith('v1,') ? s.slice(3) : s);
-        const matched = signatures.some(sig => {
-          const actualBuf = Buffer.from(sig);
-          return expectedBuf.length === actualBuf.length && crypto.timingSafeEqual(expectedBuf, actualBuf);
+        const expectedSig = svixSignature(secret, msgId, timestampStr, rawBody);
+        // Header is a space-separated list of "v1,<base64>" entries
+        const matches = sigHeader.split(' ').some((entry) => {
+          const [version, sig] = entry.split(',');
+          return version === 'v1' && sig && safeEqual(expectedSig, sig);
         });
-
-        if (!matched) {
-          return { valid: false, reason: 'Svix signature mismatch' };
-        }
+        if (!matches) return { valid: false, reason: 'Svix signature mismatch' };
         return { valid: true };
       }
 
-      // If an endpoint has a secret configured, reject any unsupported or unsigned requests
-      return { valid: false, reason: 'Endpoint requires signature verification, but no supported signature header was provided' };
+      return { valid: false, reason: 'Endpoint has a secret but the request carries no supported signature (Stripe, Shopify, GitHub, Svix/Clerk)' };
     } catch (err) {
       return { valid: false, reason: err.message };
     }
@@ -144,38 +135,26 @@ class Dispatcher extends EventEmitter {
 
     const modified = { ...headers };
     try {
-      if (provider === 'stripe' || modified['stripe-signature']) {
+      if (provider === 'stripe') {
         const freshTimestamp = Math.floor(Date.now() / 1000);
         const freshSignature = crypto
           .createHmac('sha256', secret)
           .update(`${freshTimestamp}.${rawBody}`)
           .digest('hex');
         modified['stripe-signature'] = `t=${freshTimestamp},v1=${freshSignature}`;
-      } else if (provider === 'shopify' || modified['x-shopify-hmac-sha256']) {
+      } else if (provider === 'shopify') {
         const freshHmac = crypto
           .createHmac('sha256', secret)
           .update(rawBody)
           .digest('base64');
         modified['x-shopify-hmac-sha256'] = freshHmac;
-      } else if (provider === 'github' || modified['x-hub-signature-256']) {
+      } else if (provider === 'github') {
         const freshSig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
         modified['x-hub-signature-256'] = freshSig;
-      } else if (provider === 'clerk/svix' || modified['svix-id'] || modified['svix-signature'] || modified['clerk-signature']) {
-        const freshTimestamp = Math.floor(Date.now() / 1000);
-        const svixId = modified['svix-id'] || `msg_${Date.now()}`;
-        const secretBytes = secret.startsWith('whsec_')
-          ? Buffer.from(secret.slice(6), 'base64')
-          : Buffer.from(secret, 'utf8');
-        const freshSig = crypto
-          .createHmac('sha256', secretBytes)
-          .update(`${svixId}.${freshTimestamp}.${rawBody}`)
-          .digest('base64');
-        modified['svix-id'] = svixId;
-        modified['svix-timestamp'] = String(freshTimestamp);
-        modified['svix-signature'] = `v1,${freshSig}`;
-        if (modified['clerk-signature']) {
-          modified['clerk-signature'] = `v1,${freshSig}`;
-        }
+      } else if (provider === 'clerk/svix' && modified['svix-id']) {
+        const freshTimestamp = String(Math.floor(Date.now() / 1000));
+        modified['svix-timestamp'] = freshTimestamp;
+        modified['svix-signature'] = `v1,${svixSignature(secret, modified['svix-id'], freshTimestamp, rawBody)}`;
       }
     } catch (e) {}
 
@@ -212,54 +191,31 @@ class Dispatcher extends EventEmitter {
     const base = intervals[Math.min(attempt, intervals.length - 1)];
     const jitter = Math.floor(Math.random() * (base * 0.2));
     const delaySec = base + jitter;
+    // SQLite datetime format, so the worker's comparison against datetime('now') is correct
     return new Date(Date.now() + delaySec * 1000).toISOString().slice(0, 19).replace('T', ' ');
   }
 
-  async dispatch(event, endpoint) {
+  // Callers must have claimed the event (status 'replaying') before dispatching
+  async dispatch(event, endpoint, { replay = false } = {}) {
     const limit = endpoint.concurrency_limit || this.defaultConcurrency;
     await this.acquireSlot(endpoint.id, limit);
 
     try {
-      return await this._executeDispatch(event, endpoint);
+      return await this._executeDispatch(event, endpoint, replay);
     } finally {
       this.releaseSlot(endpoint.id, limit);
     }
   }
 
-  async _executeDispatch(event, endpoint) {
+  async _executeDispatch(event, endpoint, replay = false) {
     const startTime = Date.now();
     const targetUrl = endpoint.target_url;
 
-    // Check SSRF before initiating connection
-    if (isPrivateOrMetadataUrl(targetUrl, this.strictSSRF)) {
-      const blockMsg = `Outbound delivery blocked: targetUrl targets restricted/private network (${targetUrl})`;
-      const latencyMs = Date.now() - startTime;
-      this.storage.recordAttempt({
-        eventId: event.id,
-        statusCode: 0,
-        responseBody: '',
-        errorMessage: blockMsg,
-        latencyMs
-      });
-      const result = {
-        eventId: event.id,
-        endpointId: endpoint.id,
-        success: false,
-        statusCode: 0,
-        latencyMs,
-        errorMessage: blockMsg
-      };
-      this.emit('delivery', result);
-      return result;
-    }
-
     let headers = { ...event.headers };
 
-    // Strip incoming spoofed x-hookarmor-* headers
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase().startsWith('x-hookarmor-')) {
-        delete headers[key];
-      }
+    // Never forward sender-supplied HookArmor headers; ours are added below
+    for (const name of Object.keys(headers)) {
+      if (name.startsWith('x-hookarmor-')) delete headers[name];
     }
 
     // Preserve original raw signatures before re-signing for audit and forensic trace
@@ -269,8 +225,8 @@ class Dispatcher extends EventEmitter {
     if (event.headers && event.headers['x-shopify-hmac-sha256']) {
       headers['x-hookarmor-original-shopify-hmac'] = event.headers['x-shopify-hmac-sha256'];
     }
-    if (event.headers && (event.headers['svix-signature'] || event.headers['clerk-signature'])) {
-      headers['x-hookarmor-original-svix-signature'] = event.headers['svix-signature'] || event.headers['clerk-signature'];
+    if (event.headers && event.headers['svix-signature']) {
+      headers['x-hookarmor-original-svix-signature'] = event.headers['svix-signature'];
     }
 
     // Re-sign outbound headers if endpoint secret is configured (Transparent Zero-Code-Change Mode)
@@ -278,11 +234,10 @@ class Dispatcher extends EventEmitter {
       headers = this.signHeaders(event.provider, event.raw_body, headers, endpoint.secret);
     }
 
-    // Isolated Trust Domain mode: only attach internal signature if event was verified at ingress
-    const internalSecret = process.env.HOOKARMOR_SIGNING_SECRET;
-    if (internalSecret && event.verified) {
+    // Isolated Trust Domain mode: vouch only for events whose signature was verified at ingress
+    if (this.signingSecret && event.verified) {
       const freshTs = Math.floor(Date.now() / 1000);
-      const internalSig = crypto.createHmac('sha256', internalSecret).update(`${freshTs}.${event.raw_body}`).digest('hex');
+      const internalSig = crypto.createHmac('sha256', this.signingSecret).update(`${freshTs}.${event.raw_body}`).digest('hex');
       headers['x-hookarmor-signature'] = `t=${freshTs},v1=${internalSig}`;
     }
 
@@ -292,41 +247,94 @@ class Dispatcher extends EventEmitter {
     delete headers['content-length'];
     delete headers['content-encoding'];
     delete headers['transfer-encoding'];
+    delete headers['expect'];
 
     const rawBuffer = Buffer.from(event.raw_body, 'utf8');
-    headers['content-length'] = rawBuffer.length;
+    headers['content-length'] = String(rawBuffer.length);
     headers['x-hookarmor-delivery-id'] = event.id;
     headers['x-hookarmor-attempt'] = String(event.attempts + 1);
     headers['x-hookarmor-original-timestamp'] = event.created_at;
-    const isReplay = (event.attempts > 0 || event.status === 'replaying');
+    const isReplay = replay || event.attempts > 0;
     headers['x-hookarmor-is-replay'] = isReplay ? 'true' : 'false';
 
     return new Promise((resolve) => {
       let settled = false;
-      const settle = (result) => {
+
+      // Single exit point: every outcome records exactly one attempt and resolves exactly once
+      const finish = async ({ statusCode = 0, responseBody = '', errorMessage = '' }) => {
         if (settled) return;
         settled = true;
+
+        const latencyMs = Date.now() - startTime;
+        const isSuccess = statusCode >= 200 && statusCode < 300;
+
+        let nextRetryAt = null;
+        if (!isSuccess && endpoint.auto_retry && (event.attempts + 1) < endpoint.max_retries) {
+          nextRetryAt = this.calculateNextRetry(event.attempts);
+        }
+
+        const message = isSuccess ? '' : (errorMessage || `Destination returned HTTP ${statusCode}`);
+        try {
+          this.storage.recordAttempt({
+            eventId: event.id,
+            statusCode,
+            responseBody,
+            errorMessage: message,
+            latencyMs,
+            nextRetryAt
+          });
+        } catch (err) {
+          console.error(`[Dispatcher] Failed to record attempt for ${event.id}:`, err.message);
+        }
+
+        const result = {
+          eventId: event.id,
+          endpointId: endpoint.id,
+          success: isSuccess,
+          statusCode,
+          latencyMs,
+          responseBody,
+          errorMessage: message || undefined,
+          nextRetryAt
+        };
+
         this.emit('delivery', result);
+
+        if (!isSuccess) {
+          // Alert on initial failure and on final exhaustion to prevent notification flood (§6.6)
+          const isFirstFailure = (event.attempts === 0);
+          const isExhausted = !nextRetryAt;
+          if (isFirstFailure || isExhausted) {
+            await Alerter.sendAlert(endpoint.alert_webhook_url, {
+              event,
+              endpoint,
+              attempt: { statusCode, errorMessage: message, latencyMs, isExhausted }
+            }, { strictSSRF: this.strictSSRF });
+          }
+        }
+
         resolve(result);
       };
 
       try {
+        const check = checkUrl(targetUrl, this.strictSSRF);
+        if (!check.ok) {
+          finish({ errorMessage: `Delivery blocked: ${check.reason}` });
+          return;
+        }
+
         const url = new URL(targetUrl);
         const isHttps = url.protocol === 'https:';
         const client = isHttps ? https : http;
 
-        const reqOptions = {
+        let gotResponse = false;
+        const req = client.request(url, {
           method: 'POST',
           headers,
-          timeout: this.defaultTimeoutMs
-        };
-        if (this.strictSSRF) {
-          reqOptions.lookup = guardedLookup;
-        }
-
-        let resReceived = false;
-        const req = client.request(url, reqOptions, (res) => {
-          resReceived = true;
+          timeout: this.defaultTimeoutMs,
+          lookup: guardedLookup(this.strictSSRF)
+        }, (res) => {
+          gotResponse = true;
           let responseBody = '';
           res.setEncoding('utf8');
           res.on('data', chunk => {
@@ -334,91 +342,11 @@ class Dispatcher extends EventEmitter {
               responseBody += chunk;
             }
           });
-
-          res.on('end', () => {
-            const latencyMs = Date.now() - startTime;
-            const statusCode = res.statusCode || 0;
-            const isSuccess = statusCode >= 200 && statusCode < 300;
-
-            let nextRetryAt = null;
-            if (!isSuccess && endpoint.auto_retry && (event.attempts + 1) < endpoint.max_retries) {
-              nextRetryAt = this.calculateNextRetry(event.attempts);
-            }
-
-            this.storage.recordAttempt({
-              eventId: event.id,
-              statusCode,
-              responseBody,
-              errorMessage: isSuccess ? '' : `Destination returned HTTP ${statusCode}`,
-              latencyMs,
-              nextRetryAt
-            });
-
-            const result = {
-              eventId: event.id,
-              endpointId: endpoint.id,
-              success: isSuccess,
-              statusCode,
-              latencyMs,
-              responseBody,
-              nextRetryAt
-            };
-
-            settle(result);
-
-            if (!isSuccess && endpoint.alert_webhook_url) {
-              Alerter.sendAlert(endpoint.alert_webhook_url, {
-                event,
-                endpoint,
-                attempt: { statusCode, errorMessage: `HTTP ${statusCode}`, latencyMs }
-              }).catch(() => {});
-            }
-          });
-
-          res.on('error', (err) => {
-            const latencyMs = Date.now() - startTime;
-            let nextRetryAt = null;
-            if (endpoint.auto_retry && (event.attempts + 1) < endpoint.max_retries) {
-              nextRetryAt = this.calculateNextRetry(event.attempts);
-            }
-            this.storage.recordAttempt({
-              eventId: event.id,
-              statusCode: 0,
-              responseBody: '',
-              errorMessage: err.message,
-              latencyMs,
-              nextRetryAt
-            });
-            settle({
-              eventId: event.id,
-              endpointId: endpoint.id,
-              success: false,
-              statusCode: 0,
-              latencyMs,
-              errorMessage: err.message,
-              nextRetryAt
-            });
-          });
-
+          res.on('end', () => finish({ statusCode: res.statusCode || 0, responseBody }));
+          res.on('error', (err) => finish({ errorMessage: err.message }));
+          res.on('aborted', () => finish({ errorMessage: 'Response aborted by destination' }));
           res.on('close', () => {
-            if (!res.complete && !settled) {
-              const latencyMs = Date.now() - startTime;
-              this.storage.recordAttempt({
-                eventId: event.id,
-                statusCode: 0,
-                responseBody: '',
-                errorMessage: 'Connection closed prematurely before response completed',
-                latencyMs
-              });
-              settle({
-                eventId: event.id,
-                endpointId: endpoint.id,
-                success: false,
-                statusCode: 0,
-                latencyMs,
-                errorMessage: 'Connection closed prematurely before response completed'
-              });
-            }
+            if (!res.complete) finish({ errorMessage: 'Response closed before it completed' });
           });
         });
 
@@ -426,84 +354,15 @@ class Dispatcher extends EventEmitter {
           req.destroy(new Error(`Connection timed out after ${this.defaultTimeoutMs}ms`));
         });
 
-        req.on('error', (err) => {
-          const latencyMs = Date.now() - startTime;
-          let nextRetryAt = null;
-          if (endpoint.auto_retry && (event.attempts + 1) < endpoint.max_retries) {
-            nextRetryAt = this.calculateNextRetry(event.attempts);
-          }
-
-          this.storage.recordAttempt({
-            eventId: event.id,
-            statusCode: 0,
-            responseBody: '',
-            errorMessage: err.message,
-            latencyMs,
-            nextRetryAt
-          });
-
-          const result = {
-            eventId: event.id,
-            endpointId: endpoint.id,
-            success: false,
-            statusCode: 0,
-            latencyMs,
-            errorMessage: err.message,
-            nextRetryAt
-          };
-
-          settle(result);
-
-          if (endpoint.alert_webhook_url) {
-            Alerter.sendAlert(endpoint.alert_webhook_url, {
-              event,
-              endpoint,
-              attempt: { statusCode: 0, errorMessage: err.message, latencyMs }
-            }).catch(() => {});
-          }
-        });
-
+        req.on('error', (err) => finish({ errorMessage: err.message }));
         req.on('close', () => {
-          if (!resReceived && !settled) {
-            const latencyMs = Date.now() - startTime;
-            this.storage.recordAttempt({
-              eventId: event.id,
-              statusCode: 0,
-              responseBody: '',
-              errorMessage: 'Request socket closed prematurely before response received',
-              latencyMs
-            });
-            settle({
-              eventId: event.id,
-              endpointId: endpoint.id,
-              success: false,
-              statusCode: 0,
-              latencyMs,
-              errorMessage: 'Request socket closed prematurely before response received'
-            });
-          }
+          if (!gotResponse) finish({ errorMessage: 'Connection closed before a response was received' });
         });
 
         req.write(rawBuffer);
         req.end();
       } catch (err) {
-        const latencyMs = Date.now() - startTime;
-        this.storage.recordAttempt({
-          eventId: event.id,
-          statusCode: 0,
-          responseBody: '',
-          errorMessage: err.message,
-          latencyMs
-        });
-
-        settle({
-          eventId: event.id,
-          endpointId: endpoint.id,
-          success: false,
-          statusCode: 0,
-          latencyMs,
-          errorMessage: err.message
-        });
+        finish({ errorMessage: err.message });
       }
     });
   }
@@ -512,47 +371,38 @@ class Dispatcher extends EventEmitter {
     const event = this.storage.getEvent(eventId);
     if (!event) {
       const err = new Error(`Event not found: ${eventId}`);
-      err.statusCode = 404;
+      err.code = 'NOT_FOUND';
       throw err;
     }
     const endpoint = this.storage.getEndpoint(event.endpoint_id);
     if (!endpoint) {
       const err = new Error(`Endpoint not found: ${event.endpoint_id}`);
-      err.statusCode = 404;
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+    if (!this.storage.claimEventForManualReplay(eventId)) {
+      const err = new Error(`Event ${eventId} is already being delivered`);
+      err.code = 'IN_FLIGHT';
       throw err;
     }
 
-    const claimed = this.storage.claimEventForManualReplay(eventId);
-    if (!claimed) {
-      const err = new Error(`Event ${eventId} is already in flight`);
-      err.statusCode = 409;
-      throw err;
-    }
-
-    const claimedEvent = this.storage.getEvent(eventId);
-    return this.dispatch(claimedEvent, endpoint);
+    return this.dispatch(event, endpoint, { replay: true });
   }
 
-  async replayAllFailed(endpointId = null) {
-    const failedEvents = this.storage.getFailedEventsToRetry(endpointId);
-    const claimedEvents = [];
+  // Claims every failed event (including ones that exhausted automatic retries) and delivers
+  // them in the background through the per-endpoint concurrency limiter.
+  replayAllFailed(endpointId = null, batchSize = 500) {
+    const failedEvents = this.storage.getFailedEventsForReplay(endpointId, batchSize);
+    const claimed = [];
     for (const event of failedEvents) {
-      const claimed = this.storage.claimEventForRetry(event.id);
-      if (claimed) {
-        claimedEvents.push(event);
-      }
-    }
-
-    const results = [];
-    for (const event of claimedEvents) {
       const endpoint = this.storage.getEndpoint(event.endpoint_id);
-      if (endpoint) {
-        const freshEvent = this.storage.getEvent(event.id);
-        const res = await this.dispatch(freshEvent, endpoint);
-        results.push(res);
-      }
+      if (!endpoint || !this.storage.claimEventForRetry(event.id)) continue;
+      claimed.push(event.id);
+      this.dispatch(event, endpoint, { replay: true }).catch((err) => {
+        console.error(`[Dispatcher] Replay error for ${event.id}:`, err.message);
+      });
     }
-    return results;
+    return { replayedCount: claimed.length, eventIds: claimed, remaining: this.storage.countFailed(endpointId) };
   }
 }
 

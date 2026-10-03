@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Tests: Passing](https://img.shields.io/badge/Tests-34%20Passing-brightgreen.svg)]()
-[![Status: Hardened](https://img.shields.io/badge/Status-v1.1.0-blueviolet.svg)]()
+[![Status: Production Ready](https://img.shields.io/badge/Status-v1.1.0-blueviolet.svg)]()
 
 ---
 
@@ -63,6 +63,8 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 
 Deploy your own private, persistent HookArmor instance to the cloud with one click:
 
+> **Before you deploy:** production instances refuse to start without `HOOKARMOR_API_KEY` (Render generates one automatically). Events live in SQLite under `/app/data`, so that path must be on persistent storage: Render's blueprint attaches a disk (paid `starter` plan, since free instances have no persistent disk), and on **Railway you must add a Volume mounted at `/app/data`** or every redeploy wipes the queue.
+
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template?template=https://github.com/pkdoddamani/hookarmor)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/pkdoddamani/hookarmor)
 
@@ -70,10 +72,11 @@ Deploy your own private, persistent HookArmor instance to the cloud with one cli
 
 ### Local Quickstart
 
-#### Option A: Docker Compose (Zero Config)
+#### Option A: Docker Compose
 ```bash
 git clone https://github.com/pkdoddamani/hookarmor.git
 cd hookarmor
+export HOOKARMOR_API_KEY=$(openssl rand -hex 32)   # required: protects the management API
 docker compose up -d
 ```
 
@@ -81,7 +84,7 @@ docker compose up -d
 ```bash
 npx hookarmor start
 ```
-* **Web Dashboard**: `http://localhost:4000`
+* **Web Dashboard**: `http://localhost:4000/dashboard`
 * **Ingress Gateway**: `http://localhost:4000/in/:endpointId`
 
 ### 2. Tunnel Direct to Localhost
@@ -91,8 +94,8 @@ npx hookarmor listen http://localhost:3000/api/webhooks/stripe
 
 ### 3. Replay Failed Dead-Letter Events
 ```bash
-# Replay all failed events across all endpoints
-npx hookarmor replay --failed
+# Replay all failed events across all endpoints (including ones that used up their automatic retries)
+npx hookarmor replay --failed --api-key "$HOOKARMOR_API_KEY"
 
 # Replay a specific event ID
 npx hookarmor replay evt_1758513516086_m8r0e7
@@ -100,45 +103,48 @@ npx hookarmor replay evt_1758513516086_m8r0e7
 
 ---
 
-## 📊 Verification & Regression Test Suite
+## 📊 Verification Test Suite
 
-HookArmor includes a 34-scenario test suite covering core verification, replay re-signing, and 26 hardened regression scenarios:
+HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 26-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication and dashboard escaping:
 ```bash
 npm test
 ```
 ```
 🧪 Starting HookArmor Hardened Verification Test Suite (Post-Audit)...
-  ✅ All 8 Integration & Boundary Tests Passed!
 
-🧪 Starting HookArmor 26-Point Regression Test Suite (Hardening Verification)...
-  ✅ Test 1: Retry timestamps properly due and parsed (SQLite datetime space format).
-  ✅ Test 2: Dead-letter queue replayed successfully (Exhausted retries included).
-  ✅ Test 3: In-flight crash recovery resets status to failed on startup.
-  ✅ Test 4: Worker does not double-dispatch in-flight event during sweep.
-  ✅ Test 5: 409 returned for concurrent in-flight replay.
-  ✅ Test 6: Deduplication suppresses duplicates even for failed initial events.
-  ✅ Test 7: Stripe secret rotation supported (Multiple v1 signatures).
-  ✅ Test 8: Unsigned requests rejected on secured endpoints.
-  ✅ Test 9: Svix/Clerk HMAC verified and re-signed.
-  ✅ Test 10: Mode B internal signature requires verified flag.
-  ✅ Test 11: Full SSRF address matrix blocked (IPv4, IPv6, CGNAT, int IPs).
-  ✅ Test 12: Alert URL metadata SSRF blocked.
-  ✅ Test 13: DNS lookup to loopback blocked.
-  ✅ Test 14: Endpoints API is write-only for secrets.
-  ✅ Test 15: Updating endpoint preserves existing secret.
-  ✅ Test 16: WebSocket auth challenge verified.
-  ✅ Test 17: Demo mode is strictly read-only for public.
-  ✅ Test 18: Default wide-open CORS disabled.
-  ✅ Test 19: 415 enforced on state-changing API routes.
-  ✅ Test 20: Host header validation blocks DNS rebinding.
-  ✅ Test 21: Production mode mandates API key on startup.
-  ✅ Test 22: Mock targets disabled in production.
-  ✅ Test 23: Waitlist IP rate limiting verified.
-  ✅ Test 24: Dashboard XSS escaping and CSV sanitizer verified.
-  ✅ Test 25: SQLite synchronous = FULL.
-  ✅ Test 26: Retention pruning removes old delivered events and preserves failures.
+Test 1: Testing SSRF Protection & Endpoint Creation...
+  ✅ SSRF probe against 169.254.169.254 successfully blocked.
+  ✅ Valid endpoint created with secret.
 
-🎉 ALL 34 HOOKARMOR TESTS PASSED CLEANLY!
+Test 2: Testing Ingress Signature Verification (Security Boundary)...
+  ✅ Forged signature rejected with 400 Bad Request.
+  ✅ Authentic signature verified, ingested, and delivered.
+
+Test 3: Testing 5-Minute Expiration Defeat (Fresh Outbound Re-Signing)...
+  ✅ HookArmor defeated the 5-minute Stripe expiration trap:
+     Stored in DB: t=1600000000 (Expired 5+ years ago)
+     Re-signed on replay: t=1790970445 (Current) -> stripe.webhooks.constructEvent succeeds!
+     Provenance verified: is-replay=true, orig-sig preserved.
+
+Test 4: Simulating Downstream Failure (500) -> Dead-Letter Queue...
+  ✅ Event safely quarantined in Dead-Letter Queue with HTTP 500.
+     Next automated retry scheduled with exponential backoff + jitter.
+
+Test 5: Testing Background Retry Worker (Automatic Self-Healing)...
+  ✅ Background Retry Worker automatically claimed and delivered DLQ event! (Attempts: 2)
+
+Test 6: Testing Concurrency Limiting (Pool Protection)...
+  ✅ Concurrency capped at max 2 parallel in-flight connections (pool protected).
+
+Test 7: Testing Safe Idempotency Key Deduplication...
+  ✅ Duplicate event intercepted and suppressed cleanly.
+
+Test 8: Testing API Key Authentication & Route Lockdown...
+  ✅ Unauthenticated reads and replays rejected with 401.
+  ✅ Bearer token and x-api-key headers validated with 200.
+  ✅ Ingress gateway remains open for external webhook providers.
+
+🎉 ALL 8 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!
 ```
 
 ---
@@ -198,6 +204,7 @@ HookArmor supports two forwarding architectures depending on your team's securit
 2. **Mode B: Isolated Trust Boundary (Enterprise Security)**
    * Set the `HOOKARMOR_SIGNING_SECRET` environment variable.
    * HookArmor attaches an isolated `x-hookarmor-signature: t=..., v1=...` HMAC header using your internal secret.
+   * The header is only attached to events whose provider signature was **verified at ingress**, so the endpoint must have its provider secret configured. Events on endpoints without a secret are forwarded without it.
    * Downstream handlers verify HookArmor as the internal sender, maintaining strict separation between external Stripe signatures and internal relay deliveries.
 
 ---
@@ -210,6 +217,8 @@ HookArmor returns an immediate `200 OK` to Stripe and Shopify in `<10ms` to prot
 * Once HookArmor returns `200 OK`, Stripe considers the webhook delivered and **halts its external retry backup**.
 * HookArmor's embedded SQLite database assumes **sole custody** of that event.
 * **Persistent storage is mandatory:** When deploying via Docker, you must mount the data volume (`-v $(pwd)/data:/app/data`) and ensure host-level backups are active.
+* Every commit is fsynced (`synchronous=FULL`) before the `200 OK` is sent, so an acknowledged event survives a crash or power loss of the HookArmor host. It is still a single SQLite file on a single disk: back it up, and run one HookArmor process per database.
+* If the process stops mid-delivery, those events are re-queued automatically on the next start.
 
 ---
 
@@ -244,12 +253,49 @@ openssl rand -hex 32
 HOOKARMOR_API_KEY=ha_sec_your_secure_random_key_here
 ```
 
+When `HOOKARMOR_API_KEY` is **not** set, the management API only answers requests addressed to `localhost`, and the server refuses to start in production (`NODE_ENV=production`, Railway or Render) unless `HOOKARMOR_ALLOW_NO_AUTH=true`.
+
 When `HOOKARMOR_API_KEY` is present:
 * All management and inspection endpoints (`/api/stats`, `/api/endpoints`, `/api/events`, `/api/events/:id/replay`, `/api/events/replay-all`) strictly reject unauthenticated requests with `401 Unauthorized` and require `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
 * Ingress webhook receiving (`/in/:endpointId`) and public waitlist signups remain open for incoming traffic.
-* Public read-only demo access can only be enabled if explicitly running with `HOOKARMOR_DEMO_MODE=true` (for isolated marketing sandboxes).
+* Public demo access can only be enabled with `HOOKARMOR_DEMO_MODE=true` (for isolated marketing sandboxes) and is strictly read-only: replays always require the key.
+* The live dashboard feed (`/ws`) only streams events after the client authenticates with the key.
+* Endpoint signing secrets are write-only: the API reports `has_secret` but never returns the secret.
+* Endpoints with a secret reject any request that does not carry a valid Stripe, Shopify, GitHub or Svix/Clerk signature.
+* State-changing API calls must use `Content-Type: application/json`; CORS is disabled unless you list origins in `HOOKARMOR_CORS_ORIGINS`.
 * Query parameter authentication (`?api_key=...`) is strictly prohibited to avoid leaking tokens into browser history and proxy access logs.
 * The web dashboard displays an **Admin Login** prompt storing your key only in ephemeral session memory.
+
+---
+
+## ⚙️ Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HOOKARMOR_API_KEY` | none (required in production) | Admin key for the management API, dashboard and CLI |
+| `HOOKARMOR_STRICT_SSRF` | `true` in production, `false` locally | Block loopback, private-network and link-local delivery targets (checked on the resolved IP at delivery time). Cloud metadata addresses are always blocked |
+| `HOOKARMOR_SIGNING_SECRET` | none | Enables Mode B internal signatures |
+| `HOOKARMOR_DATA_DIR` | `./data` (current directory) | Where `hookarmor.db` is stored |
+| `HOOKARMOR_RETENTION_DAYS` | `0` (keep forever) | Delete delivered events older than this many days; failed events are always kept |
+| `HOOKARMOR_MAX_BODY` | `10mb` | Maximum webhook body size |
+| `HOOKARMOR_ENABLE_MOCK` | `false` in production | Mount the `/mock/*` simulation receiver |
+| `HOOKARMOR_CORS_ORIGINS` | none | Comma-separated origins allowed to call `/api` from a browser |
+| `HOOKARMOR_TRUST_PROXY` | `1` on Railway/Render | Express `trust proxy` setting, used for per-client rate limits |
+| `HOOKARMOR_DEMO_MODE` | `false` | Read-only public demo |
+| `HOOKARMOR_ALLOW_NO_AUTH` | `false` | Allow production start without an API key (trusted networks only) |
+
+## 📦 Upgrade Notes (v1.1.0)
+
+v1.1.0 includes core engine hardening, security perimeter lockdowns, and reliability enhancements. Please review the following behavior changes when upgrading:
+
+1. **Mandatory Production API Key**: HookArmor refuses to start in `NODE_ENV=production` without `HOOKARMOR_API_KEY` unless `HOOKARMOR_ALLOW_NO_AUTH=true` is set.
+2. **Strict Content-Type Enforced**: State-changing API routes (`POST`, `PUT`, `DELETE`) require `Content-Type: application/json`. Requests with missing or invalid content types receive HTTP `415 Unsupported Media Type`.
+3. **Unsigned Webhooks Rejected on Secured Endpoints**: Ingress webhooks to endpoints configured with a signing secret now strictly require a recognized cryptographic signature header (`stripe-signature`, `x-shopify-hmac-sha256`, `x-hub-signature-256`, or `svix-signature`). Unsigned requests are rejected with HTTP 400.
+4. **Mode B Internal Signatures**: Internal re-signing (`x-hookarmor-signature`) is now only attached to events verified at ingress.
+5. **Non-blocking Replay-All**: `POST /api/events/replay-all` immediately claims up to 500 failed events and returns `{ replayedCount, eventIds, remaining }`, delivering them asynchronously in the background.
+6. **Data Storage Directory**: Default database path is `./data` in current working directory (overridable with `HOOKARMOR_DATA_DIR`). Docker deployments using `/app/data` are unaffected.
+7. **Root Route Behavior**: Self-hosted instances serve the interactive Dashboard at `/` by default. Set `HOOKARMOR_SERVE_LANDING=true` to serve the marketing landing page.
+8. **Notification Throttling**: Alert webhooks trigger on the first delivery failure and upon final dead-letter queue exhaustion to eliminate alert flooding during outages.
 
 ---
 

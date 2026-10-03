@@ -1,12 +1,14 @@
 const http = require('http');
 const https = require('https');
-const { isPrivateOrMetadataUrl } = require('./ssrf');
+const { checkUrl, guardedLookup } = require('./netguard');
 
 class Alerter {
-  static async sendAlert(alertWebhookUrl, { event, endpoint, attempt }) {
+  static async sendAlert(alertWebhookUrl, { event, endpoint, attempt }, { strictSSRF = false } = {}) {
     if (!alertWebhookUrl) return;
-    if (isPrivateOrMetadataUrl(alertWebhookUrl, true)) {
-      console.error('[Alerter] Alert webhook URL blocked by SSRF policy:', alertWebhookUrl);
+
+    const check = checkUrl(alertWebhookUrl, strictSSRF);
+    if (!check.ok) {
+      console.error(`[Alerter] Alert webhook URL blocked: ${check.reason}`);
       return;
     }
 
@@ -50,13 +52,11 @@ class Alerter {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(postData)
         },
-        timeout: 5000
-      });
+        timeout: 5000,
+        lookup: guardedLookup(strictSSRF)
+      }, (res) => res.resume());
 
-      req.on('timeout', () => {
-        req.destroy(new Error('Alert webhook timed out after 5000ms'));
-      });
-
+      req.on('timeout', () => req.destroy(new Error('Alert webhook timed out')));
       req.on('error', (err) => {
         console.error('[Alerter] Failed to send alert webhook:', err.message);
       });

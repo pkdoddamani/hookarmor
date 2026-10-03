@@ -9,8 +9,8 @@
   "files": [
     "bin",
     "src",
-    "index.js",
-    "README.md"
+    "README.md",
+    "index.js"
   ],
   "scripts": {
     "start": "node bin/hookarmor.js start",

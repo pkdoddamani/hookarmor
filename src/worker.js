@@ -6,6 +6,9 @@ class RetryWorker extends EventEmitter {
     this.storage = storage;
     this.dispatcher = dispatcher;
     this.intervalMs = options.intervalMs || 5000;
+    this.retentionDays = options.retentionDays || 0;
+    this.pruneIntervalMs = options.pruneIntervalMs || 60 * 60 * 1000;
+    this.lastPruneAt = 0;
     this.timer = null;
     this.isProcessing = false;
   }
@@ -26,16 +29,22 @@ class RetryWorker extends EventEmitter {
     }
   }
 
+  prune() {
+    if (!this.retentionDays || Date.now() - this.lastPruneAt < this.pruneIntervalMs) return;
+    this.lastPruneAt = Date.now();
+    const removed = this.storage.pruneEvents(this.retentionDays);
+    if (removed > 0) this.emit('pruned', { removed });
+  }
+
   async tick() {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
     try {
+      this.prune();
+
       const eventsDue = this.storage.getEventsDueForRetry(25);
-      if (!eventsDue || eventsDue.length === 0) {
-        this.isProcessing = false;
-        return;
-      }
+      if (!eventsDue || eventsDue.length === 0) return;
 
       for (const event of eventsDue) {
         const claimed = this.storage.claimEventForRetry(event.id);
@@ -47,16 +56,13 @@ class RetryWorker extends EventEmitter {
         this.emit('retry:claimed', { eventId: event.id, endpointId: endpoint.id });
 
         // Dispatch asynchronously without blocking next iterations
-        this.dispatcher.dispatch(event, endpoint).catch((err) => {
+        this.dispatcher.dispatch(event, endpoint, { replay: true }).catch((err) => {
           this.emit('retry:error', { eventId: event.id, error: err.message });
         });
       }
     } catch (err) {
-      if (this.listenerCount('error') > 0) {
-        this.emit('error', err);
-      } else {
-        console.error('[RetryWorker] Worker tick error:', err.message || err);
-      }
+      if (this.listenerCount('error') > 0) this.emit('error', err);
+      else console.error('[RetryWorker] Tick failed:', err.message);
     } finally {
       this.isProcessing = false;
     }

@@ -156,10 +156,7 @@ async function runTests() {
 
     // Replay the event: HookArmor must re-sign with fresh current timestamp!
     capturedHeaders = null;
-    await fetch(`${baseUrl}/api/events/${captureResBody.hookarmor_id}/replay`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
+    await fetch(`${baseUrl}/api/events/${captureResBody.hookarmor_id}/replay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
 
     assert.ok(capturedHeaders, 'Target must receive replayed request');
     assert.ok(capturedHeaders['stripe-signature'], 'Forwarded request must include re-signed Stripe-Signature');
@@ -319,10 +316,7 @@ async function runTests() {
       assert.strictEqual(unauthEvents.status, 401, 'Unauthenticated GET /api/events must be rejected with 401');
 
       // B. Unauthenticated POST /api/events/replay-all must return 401
-      const unauthReplay = await fetch(`${authBaseUrl}/api/events/replay-all`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const unauthReplay = await fetch(`${authBaseUrl}/api/events/replay-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       assert.strictEqual(unauthReplay.status, 401, 'Unauthenticated POST /api/events/replay-all must be rejected with 401');
 
       // C. Authenticated with Bearer token must return 200
