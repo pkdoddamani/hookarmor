@@ -52,7 +52,11 @@ class RetryWorker extends EventEmitter {
         });
       }
     } catch (err) {
-      this.emit('error', err);
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', err);
+      } else {
+        console.error('[RetryWorker] Worker tick error:', err.message || err);
+      }
     } finally {
       this.isProcessing = false;
     }

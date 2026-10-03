@@ -13,6 +13,7 @@ services:
     environment:
       - PORT=4000
       - NODE_ENV=production
+      - HOOKARMOR_API_KEY=${HOOKARMOR_API_KEY:?HOOKARMOR_API_KEY environment variable is required}
 
 volumes:
   hookarmor_data:

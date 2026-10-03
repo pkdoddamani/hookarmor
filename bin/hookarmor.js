@@ -86,26 +86,46 @@ program
   .argument('[eventId]', 'Specific event ID to replay')
   .option('--failed', 'Replay all failed events')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
+  .option('-k, --api-key <key>', 'HookArmor API key', process.env.HOOKARMOR_API_KEY)
   .action(async (eventId, options) => {
     const baseUrl = options.url.replace(/\/$/, '');
+    const headers = { 'Content-Type': 'application/json' };
+    if (options.apiKey) {
+      headers['Authorization'] = `Bearer ${options.apiKey}`;
+    }
+
     try {
       if (options.failed || !eventId) {
         console.log(chalk.yellow('🔄 Replaying all dead-letter events...'));
-        const res = await fetch(`${baseUrl}/api/events/replay-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        const res = await fetch(`${baseUrl}/api/events/replay-all`, { method: 'POST', headers });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          console.error(chalk.red(`❌ Replay-all failed (HTTP ${res.status}): ${errData.error || res.statusText}`));
+          process.exitCode = 1;
+          return;
+        }
         const data = await res.json();
         console.log(chalk.green(`✅ Dispatched replay for ${data.replayedCount} events.`));
       } else {
         console.log(chalk.yellow(`🔄 Replaying event ${eventId}...`));
-        const res = await fetch(`${baseUrl}/api/events/${eventId}/replay`, { method: 'POST' });
+        const res = await fetch(`${baseUrl}/api/events/${eventId}/replay`, { method: 'POST', headers });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          console.error(chalk.red(`❌ Replay request rejected (HTTP ${res.status}): ${errData.error || res.statusText}`));
+          process.exitCode = 1;
+          return;
+        }
         const data = await res.json();
         if (data.success) {
           console.log(chalk.green(`✅ Replay successful: HTTP ${data.statusCode} (${data.latencyMs}ms)`));
         } else {
           console.log(chalk.red(`❌ Replay failed: HTTP ${data.statusCode} (${data.errorMessage || 'Target rejected'})`));
+          process.exitCode = 1;
         }
       }
     } catch (err) {
       console.error(chalk.red(`Failed to connect to HookArmor at ${baseUrl}: ${err.message}`));
+      process.exitCode = 1;
     }
   });
 
@@ -113,10 +133,20 @@ program
   .command('status')
   .description('Check HookArmor metrics and dead-letter queue count')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
+  .option('-k, --api-key <key>', 'HookArmor API key', process.env.HOOKARMOR_API_KEY)
   .action(async (options) => {
     const baseUrl = options.url.replace(/\/$/, '');
+    const headers = {};
+    if (options.apiKey) {
+      headers['Authorization'] = `Bearer ${options.apiKey}`;
+    }
     try {
-      const res = await fetch(`${baseUrl}/api/stats`);
+      const res = await fetch(`${baseUrl}/api/stats`, { headers });
+      if (!res.ok) {
+        console.error(chalk.red(`❌ Failed to retrieve stats (HTTP ${res.status}): ${res.statusText}`));
+        process.exitCode = 1;
+        return;
+      }
       const data = await res.json();
       console.log(chalk.blue.bold('\n🛡️  HookArmor Metrics'));
       console.log(chalk.gray('───────────────────────'));
@@ -127,6 +157,7 @@ program
       console.log(`Avg Latency    : ${chalk.white(`${data.avgLatencyMs} ms`)}\n`);
     } catch (err) {
       console.error(chalk.red(`Failed to connect to HookArmor at ${baseUrl}: ${err.message}`));
+      process.exitCode = 1;
     }
   });
 

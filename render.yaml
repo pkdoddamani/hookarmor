@@ -3,13 +3,15 @@ services:
     name: hookarmor
     env: docker
     dockerfilePath: Dockerfile
-    plan: free
+    plan: starter
     region: oregon
     envVars:
       - key: PORT
         value: 4000
       - key: NODE_ENV
         value: production
+      - key: HOOKARMOR_API_KEY
+        generateValue: true
     disk:
       name: hookarmor-data
       mountPath: /app/data

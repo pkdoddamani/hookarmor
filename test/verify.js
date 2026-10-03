@@ -156,7 +156,10 @@ async function runTests() {
 
     // Replay the event: HookArmor must re-sign with fresh current timestamp!
     capturedHeaders = null;
-    await fetch(`${baseUrl}/api/events/${captureResBody.hookarmor_id}/replay`, { method: 'POST' });
+    await fetch(`${baseUrl}/api/events/${captureResBody.hookarmor_id}/replay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
 
     assert.ok(capturedHeaders, 'Target must receive replayed request');
     assert.ok(capturedHeaders['stripe-signature'], 'Forwarded request must include re-signed Stripe-Signature');
@@ -272,7 +275,7 @@ async function runTests() {
     await new Promise(r => setTimeout(r, 400));
     slowServer.close();
 
-    assert.ok(maxConcurrentObserved <= 3, `Max concurrent (${maxConcurrentObserved}) must respect semaphore limit (2)`);
+    assert.ok(maxConcurrentObserved <= 2, `Max concurrent (${maxConcurrentObserved}) must respect semaphore limit (2)`);
     console.log(`  ✅ Concurrency capped at max ${maxConcurrentObserved} parallel in-flight connections (pool protected).\n`);
 
     // 7. Idempotency Deduplication (Suppress Delivered Duplicate)
@@ -316,7 +319,10 @@ async function runTests() {
       assert.strictEqual(unauthEvents.status, 401, 'Unauthenticated GET /api/events must be rejected with 401');
 
       // B. Unauthenticated POST /api/events/replay-all must return 401
-      const unauthReplay = await fetch(`${authBaseUrl}/api/events/replay-all`, { method: 'POST' });
+      const unauthReplay = await fetch(`${authBaseUrl}/api/events/replay-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
       assert.strictEqual(unauthReplay.status, 401, 'Unauthenticated POST /api/events/replay-all must be rejected with 401');
 
       // C. Authenticated with Bearer token must return 200

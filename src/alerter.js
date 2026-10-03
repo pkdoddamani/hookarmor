@@ -1,9 +1,14 @@
 const http = require('http');
 const https = require('https');
+const { isPrivateOrMetadataUrl } = require('./ssrf');
 
 class Alerter {
   static async sendAlert(alertWebhookUrl, { event, endpoint, attempt }) {
     if (!alertWebhookUrl) return;
+    if (isPrivateOrMetadataUrl(alertWebhookUrl, true)) {
+      console.error('[Alerter] Alert webhook URL blocked by SSRF policy:', alertWebhookUrl);
+      return;
+    }
 
     const payload = {
       text: `🚨 [HookArmor Alert] Webhook delivery failed for endpoint: ${endpoint.name}`,
@@ -46,6 +51,10 @@ class Alerter {
           'Content-Length': Buffer.byteLength(postData)
         },
         timeout: 5000
+      });
+
+      req.on('timeout', () => {
+        req.destroy(new Error('Alert webhook timed out after 5000ms'));
       });
 
       req.on('error', (err) => {

@@ -3,8 +3,8 @@
 > **Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-8%20Passing-brightgreen.svg)]()
-[![Status: Production Ready](https://img.shields.io/badge/Status-v1.0.3-blueviolet.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-34%20Passing-brightgreen.svg)]()
+[![Status: Hardened](https://img.shields.io/badge/Status-v1.1.0-blueviolet.svg)]()
 
 ---
 
@@ -100,48 +100,45 @@ npx hookarmor replay evt_1758513516086_m8r0e7
 
 ---
 
-## 📊 Verification Test Suite
+## 📊 Verification & Regression Test Suite
 
-HookArmor includes an 8-scenario automated verification test suite covering edge cases, replay re-signing, and pool protection:
+HookArmor includes a 34-scenario test suite covering core verification, replay re-signing, and 26 hardened regression scenarios:
 ```bash
 npm test
 ```
 ```
 🧪 Starting HookArmor Hardened Verification Test Suite (Post-Audit)...
+  ✅ All 8 Integration & Boundary Tests Passed!
 
-Test 1: Testing SSRF Protection & Endpoint Creation...
-  ✅ SSRF probe against 169.254.169.254 successfully blocked.
-  ✅ Valid endpoint created with secret.
+🧪 Starting HookArmor 26-Point Regression Test Suite (Hardening Verification)...
+  ✅ Test 1: Retry timestamps properly due and parsed (SQLite datetime space format).
+  ✅ Test 2: Dead-letter queue replayed successfully (Exhausted retries included).
+  ✅ Test 3: In-flight crash recovery resets status to failed on startup.
+  ✅ Test 4: Worker does not double-dispatch in-flight event during sweep.
+  ✅ Test 5: 409 returned for concurrent in-flight replay.
+  ✅ Test 6: Deduplication suppresses duplicates even for failed initial events.
+  ✅ Test 7: Stripe secret rotation supported (Multiple v1 signatures).
+  ✅ Test 8: Unsigned requests rejected on secured endpoints.
+  ✅ Test 9: Svix/Clerk HMAC verified and re-signed.
+  ✅ Test 10: Mode B internal signature requires verified flag.
+  ✅ Test 11: Full SSRF address matrix blocked (IPv4, IPv6, CGNAT, int IPs).
+  ✅ Test 12: Alert URL metadata SSRF blocked.
+  ✅ Test 13: DNS lookup to loopback blocked.
+  ✅ Test 14: Endpoints API is write-only for secrets.
+  ✅ Test 15: Updating endpoint preserves existing secret.
+  ✅ Test 16: WebSocket auth challenge verified.
+  ✅ Test 17: Demo mode is strictly read-only for public.
+  ✅ Test 18: Default wide-open CORS disabled.
+  ✅ Test 19: 415 enforced on state-changing API routes.
+  ✅ Test 20: Host header validation blocks DNS rebinding.
+  ✅ Test 21: Production mode mandates API key on startup.
+  ✅ Test 22: Mock targets disabled in production.
+  ✅ Test 23: Waitlist IP rate limiting verified.
+  ✅ Test 24: Dashboard XSS escaping and CSV sanitizer verified.
+  ✅ Test 25: SQLite synchronous = FULL.
+  ✅ Test 26: Retention pruning removes old delivered events and preserves failures.
 
-Test 2: Testing Ingress Signature Verification (Security Boundary)...
-  ✅ Forged signature rejected with 400 Bad Request.
-  ✅ Authentic signature verified, ingested, and delivered.
-
-Test 3: Testing 5-Minute Expiration Defeat (Fresh Outbound Re-Signing)...
-  ✅ HookArmor defeated the 5-minute Stripe expiration trap:
-     Stored in DB: t=1600000000 (Expired 5+ years ago)
-     Re-signed on replay: t=1790970445 (Current) -> stripe.webhooks.constructEvent succeeds!
-     Provenance verified: is-replay=true, orig-sig preserved.
-
-Test 4: Simulating Downstream Failure (500) -> Dead-Letter Queue...
-  ✅ Event safely quarantined in Dead-Letter Queue with HTTP 500.
-     Next automated retry scheduled with exponential backoff + jitter.
-
-Test 5: Testing Background Retry Worker (Automatic Self-Healing)...
-  ✅ Background Retry Worker automatically claimed and delivered DLQ event! (Attempts: 2)
-
-Test 6: Testing Concurrency Limiting (Pool Protection)...
-  ✅ Concurrency capped at max 2 parallel in-flight connections (pool protected).
-
-Test 7: Testing Safe Idempotency Key Deduplication...
-  ✅ Duplicate event intercepted and suppressed cleanly.
-
-Test 8: Testing API Key Authentication & Route Lockdown...
-  ✅ Unauthenticated reads and replays rejected with 401.
-  ✅ Bearer token and x-api-key headers validated with 200.
-  ✅ Ingress gateway remains open for external webhook providers.
-
-🎉 ALL 8 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!
+🎉 ALL 34 HOOKARMOR TESTS PASSED CLEANLY!
 ```
 
 ---

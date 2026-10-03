@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { randomUUID } = require('crypto');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -9,47 +9,45 @@ const { WebSocketServer, WebSocket } = require('ws');
 const Storage = require('./storage');
 const Dispatcher = require('./dispatcher');
 const RetryWorker = require('./worker');
+const { isPrivateOrMetadataUrl } = require('./ssrf');
 
-function isPrivateOrMetadataUrl(urlString, strictSSRF = false) {
-  try {
-    const parsed = new URL(urlString);
-    const hostname = parsed.hostname.toLowerCase();
-    if (
-      hostname === '169.254.169.254' ||
-      hostname === 'metadata.google.internal' ||
-      hostname === '100.100.100.200' ||
-      hostname.startsWith('169.254.')
-    ) {
-      return true;
-    }
-    if (strictSSRF) {
-      if (
-        hostname === 'localhost' ||
-        hostname === '127.0.0.1' ||
-        hostname === '::1' ||
-        hostname === '0.0.0.0' ||
-        hostname.startsWith('10.') ||
-        hostname.startsWith('192.168.') ||
-        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
-      ) {
-        return true;
-      }
-    }
-    return false;
-  } catch (e) {
-    return true;
-  }
+function safeKeyCompare(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  const h1 = crypto.createHash('sha256').update(provided).digest();
+  const h2 = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(h1, h2);
 }
 
 function createServer(options = {}) {
+  const isProduction = options.production !== undefined
+    ? options.production
+    : (process.env.NODE_ENV === 'production');
+
+  const apiKey = options.apiKey || process.env.HOOKARMOR_API_KEY || null;
+
+  if (isProduction && !apiKey) {
+    throw new Error('HOOKARMOR_API_KEY environment variable is required in production mode');
+  }
+
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
 
+  // Rate limiting map for waitlist
+  const waitlistRateLimit = new Map();
+
+  const isDemoMode = options.demoMode !== undefined 
+    ? options.demoMode 
+    : (process.env.HOOKARMOR_DEMO_MODE === 'true');
+  const strictSSRF = options.strictSSRF !== undefined
+    ? options.strictSSRF
+    : (isProduction ? true : (process.env.HOOKARMOR_STRICT_SSRF === 'true'));
+
   const storage = new Storage(options.dbPath);
   const dispatcher = new Dispatcher(storage, {
     defaultConcurrency: options.defaultConcurrency || 5,
-    defaultTimeoutMs: options.defaultTimeoutMs || 25000
+    defaultTimeoutMs: options.defaultTimeoutMs || 25000,
+    strictSSRF
   });
 
   const worker = new RetryWorker(storage, dispatcher, {
@@ -63,11 +61,44 @@ function createServer(options = {}) {
     worker.stop();
   });
 
+  // WebSocket authentication & connection handling
+  wss.on('connection', (socket, req) => {
+    if (!apiKey) {
+      const hostHeader = req.headers['host'] || '';
+      const hostname = hostHeader.split(':')[0].toLowerCase();
+      if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1' && hostname !== '[::1]') {
+        socket.close(4003, 'Forbidden host');
+        return;
+      }
+      socket.authenticated = true;
+    } else {
+      socket.authenticated = false;
+      const timeout = setTimeout(() => {
+        if (!socket.authenticated) {
+          socket.close(4001, 'Unauthorized');
+        }
+      }, 5000);
+
+      socket.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw);
+          if (msg.type === 'auth' && safeKeyCompare(msg.token, apiKey)) {
+            socket.authenticated = true;
+            clearTimeout(timeout);
+            socket.send(JSON.stringify({ type: 'authenticated' }));
+          }
+        } catch (e) {}
+      });
+
+      socket.on('close', () => clearTimeout(timeout));
+    }
+  });
+
   // Broadcast helper for real-time WebSocket dashboard
   function broadcast(type, data) {
     const payload = JSON.stringify({ type, data });
     wss.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === WebSocket.OPEN && client.authenticated) {
         client.send(payload);
       }
     });
@@ -78,8 +109,13 @@ function createServer(options = {}) {
     broadcast('delivery', res);
   });
 
-  // Enable CORS
-  app.use(cors());
+  // CORS configuration (only enable when explicitly configured)
+  if (options.cors || process.env.HOOKARMOR_CORS_ORIGIN) {
+    const corsOptions = typeof options.cors === 'object'
+      ? options.cors
+      : (process.env.HOOKARMOR_CORS_ORIGIN ? { origin: process.env.HOOKARMOR_CORS_ORIGIN } : {});
+    app.use(cors(corsOptions));
+  }
 
   // Serve static UI assets
   app.use('/static', express.static(path.join(__dirname, 'public')));
@@ -113,11 +149,11 @@ function createServer(options = {}) {
       provider = 'shopify';
       eventType = headers['x-shopify-topic'];
       if (headers['x-shopify-webhook-id']) idempotencyKey = headers['x-shopify-webhook-id'];
-    } else if (headers['x-github-event']) {
+    } else if (headers['x-github-event'] || headers['x-hub-signature-256']) {
       provider = 'github';
       eventType = headers['x-github-event'];
       if (headers['x-github-delivery']) idempotencyKey = headers['x-github-delivery'];
-    } else if (headers['clerk-signature'] || headers['svix-id']) {
+    } else if (headers['clerk-signature'] || headers['svix-id'] || headers['svix-signature']) {
       provider = 'clerk/svix';
       if (headers['svix-id']) idempotencyKey = headers['svix-id'];
       try {
@@ -133,6 +169,7 @@ function createServer(options = {}) {
     }
 
     // 0. Verify signature on ingress if endpoint secret is configured
+    let isVerified = 0;
     if (endpoint.secret) {
       const verification = Dispatcher.verifyIngressSignature(provider, rawBody, headers, endpoint.secret);
       if (!verification.valid) {
@@ -142,34 +179,44 @@ function createServer(options = {}) {
           reason: verification.reason
         });
       }
+      isVerified = 1;
     }
 
-    // Deduplication check: if this event ID was already delivered, ack immediately without duplicating downstream side effects
+    // Deduplication check: suppress duplicate execution if idempotency key was already received in any status
     if (idempotencyKey) {
       const existing = storage.findEventByIdempotencyKey(endpoint.id, idempotencyKey);
-      if (existing && existing.status === 'delivered') {
+      if (existing) {
         return res.status(200).json({
           received: true,
           hookarmor_id: existing.id,
           status: 'deduplicated',
-          message: `Idempotency key ${idempotencyKey} already delivered. Suppressed duplicate execution.`
+          message: `Idempotency key ${idempotencyKey} already received (status: ${existing.status}). Suppressed duplicate execution.`
         });
       }
     }
 
-    const eventId = `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const eventId = `evt_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
-    // 1. Durably save event in SQLite
-    const savedEvent = storage.saveEvent({
-      id: eventId,
-      endpointId: endpoint.id,
-      idempotencyKey,
-      provider,
-      eventType,
-      headers,
-      rawBody,
-      status: 'pending'
-    });
+    // 1. Durably save event in SQLite with try/catch to prevent unhandled rejection crashes
+    let savedEvent;
+    try {
+      savedEvent = storage.saveEvent({
+        id: eventId,
+        endpointId: endpoint.id,
+        idempotencyKey,
+        provider,
+        eventType,
+        headers,
+        rawBody,
+        status: 'pending',
+        verified: isVerified
+      });
+    } catch (err) {
+      console.error(`[Ingress] Database storage error for event ${eventId}:`, err);
+      return res.status(503).json({
+        error: 'Service temporarily unavailable: unable to persist webhook payload'
+      });
+    }
 
     broadcast('event:received', {
       id: eventId,
@@ -196,18 +243,35 @@ function createServer(options = {}) {
     });
   });
 
+  // Host validation & DNS-rebinding protection for API
+  app.use('/api', (req, res, next) => {
+    if (!apiKey) {
+      const hostHeader = req.headers['host'] || '';
+      const hostname = hostHeader.split(':')[0].toLowerCase();
+      if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1' && hostname !== '[::1]') {
+        return res.status(403).json({ error: 'Forbidden: host not permitted without API key configuration' });
+      }
+    }
+    next();
+  });
+
+  // Require Content-Type: application/json on state-changing API routes
+  app.use('/api', (req, res, next) => {
+    if (['POST', 'PUT', 'DELETE'].includes(req.method) && req.path !== '/waitlist') {
+      const contentType = req.headers['content-type'] || '';
+      if (!contentType.includes('application/json')) {
+        return res.status(415).json({
+          error: 'Unsupported Media Type: Content-Type must be application/json'
+        });
+      }
+    }
+    next();
+  });
+
   // REST API: JSON Body Parser for Dashboard / Management
   app.use(express.json());
 
-  // Management API Authentication Middleware (active when HOOKARMOR_API_KEY is configured)
-  const apiKey = options.apiKey || process.env.HOOKARMOR_API_KEY || null;
-  const isDemoMode = options.demoMode !== undefined 
-    ? options.demoMode 
-    : (process.env.HOOKARMOR_DEMO_MODE === 'true');
-  const strictSSRF = options.strictSSRF !== undefined
-    ? options.strictSSRF
-    : (process.env.HOOKARMOR_STRICT_SSRF === 'true');
-
+  // Management API Authentication Middleware
   app.use('/api', (req, res, next) => {
     // Keep public waitlist signup open for landing page
     if (req.path === '/waitlist' && req.method === 'POST') return next();
@@ -215,19 +279,23 @@ function createServer(options = {}) {
     // If apiKey is NOT configured and demo mode is NOT forced, allow open local dev access
     if (!apiKey && !isDemoMode) return next();
 
-    // If explicit demo mode is active (e.g. public marketing demo sandbox), allow read-only & replay simulation
+    // If explicit demo mode is active (e.g. public marketing demo sandbox), allow read-only GET routes
     if (isDemoMode) {
       const isPublicDemo =
-        (req.method === 'GET' && (req.path === '/stats' || req.path === '/endpoints' || req.path === '/events' || /^\/events\/[^\/]+$/.test(req.path))) ||
-        (req.method === 'POST' && (req.path === '/events/replay-all' || /^\/events\/[^\/]+\/replay$/.test(req.path)));
+        req.method === 'GET' && (
+          req.path === '/stats' ||
+          req.path === '/endpoints' ||
+          req.path === '/events' ||
+          /^\/events\/[^\/]+$/.test(req.path)
+        );
 
       if (isPublicDemo) return next();
     }
 
-    // When apiKey is configured (production mode), strictly require authentication
+    // Require valid authentication
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers['x-api-key'] || '';
-    if (!token || token !== apiKey) {
+    if (!token || !safeKeyCompare(token, apiKey)) {
       return res.status(401).json({ error: 'Unauthorized: valid HookArmor API key required in header' });
     }
     next();
@@ -238,20 +306,37 @@ function createServer(options = {}) {
     res.json(storage.getStats());
   });
 
-  // List Endpoints
+  // List Endpoints (Secrets are write-only, never returned in API)
   app.get('/api/endpoints', (req, res) => {
-    res.json(storage.listEndpoints());
+    const endpoints = storage.listEndpoints().map(ep => {
+      const { secret, ...safe } = ep;
+      return {
+        ...safe,
+        has_secret: Boolean(secret)
+      };
+    });
+    res.json(endpoints);
   });
 
   // Create or Update Endpoint
   app.post('/api/endpoints', (req, res) => {
-    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit } = req.body;
+    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit } = req.body || {};
     if (!id || !name || !targetUrl) {
       return res.status(400).json({ error: 'id, name, and targetUrl are required' });
     }
+
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+      return res.status(400).json({ error: 'Endpoint ID must be 1-64 alphanumeric characters, underscores, or hyphens' });
+    }
+
     if (isPrivateOrMetadataUrl(targetUrl, strictSSRF)) {
       return res.status(400).json({ error: 'targetUrl cannot target cloud metadata or private network addresses (SSRF blocked)' });
     }
+
+    if (alertWebhookUrl && isPrivateOrMetadataUrl(alertWebhookUrl, strictSSRF)) {
+      return res.status(400).json({ error: 'alertWebhookUrl cannot target cloud metadata or private network addresses (SSRF blocked)' });
+    }
+
     const endpoint = storage.createEndpoint({
       id,
       name,
@@ -262,17 +347,22 @@ function createServer(options = {}) {
       maxRetries: maxRetries || 5,
       concurrencyLimit: concurrencyLimit || concurrency_limit || 5
     });
-    res.json(endpoint);
+
+    const { secret: _s, ...safe } = endpoint;
+    res.json({ ...safe, has_secret: Boolean(_s) });
   });
 
   // List Events
   app.get('/api/events', (req, res) => {
-    const { endpointId, status, limit, offset } = req.query;
+    const { endpointId, status } = req.query;
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 50));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
     const events = storage.listEvents({
       endpointId,
       status,
-      limit: parseInt(limit, 10) || 50,
-      offset: parseInt(offset, 10) || 0
+      limit,
+      offset
     });
     res.json(events);
   });
@@ -291,7 +381,8 @@ function createServer(options = {}) {
       const result = await dispatcher.replayEvent(req.params.id);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      const status = err.statusCode || (err.message.includes('already in flight') ? 409 : 500);
+      res.status(status).json({ error: err.message });
     }
   });
 
@@ -308,11 +399,29 @@ function createServer(options = {}) {
 
   // Waitlist Registration
   app.post('/api/waitlist', (req, res) => {
+    const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const now = Date.now();
+    const windowMs = 10 * 60 * 1000; // 10 minutes
+    const maxRequests = 5;
+
+    let timestamps = waitlistRateLimit.get(clientIp) || [];
+    timestamps = timestamps.filter(t => now - t < windowMs);
+
+    if (timestamps.length >= maxRequests) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
     const { email, source } = req.body || {};
-    if (!email || !email.includes('@')) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email || typeof email !== 'string' || email.length > 255 || !emailRegex.test(email.trim())) {
       return res.status(400).json({ error: 'Valid email required' });
     }
-    const result = storage.addWaitlist(email.trim().toLowerCase(), source || 'landing_page');
+
+    timestamps.push(now);
+    waitlistRateLimit.set(clientIp, timestamps);
+
+    const safeSource = typeof source === 'string' ? source.slice(0, 50) : 'landing_page';
+    const result = storage.addWaitlist(email.trim().toLowerCase(), safeSource);
     res.json({ success: true, message: 'Added to HookArmor Cloud beta waitlist!', email: result.email });
   });
 
@@ -320,27 +429,29 @@ function createServer(options = {}) {
     res.json(storage.listWaitlist());
   });
 
-  // Mock Target Receiver (for self-testing and local simulation)
-  let mockTargetBehavior = {
-    statusCode: 200,
-    delayMs: 15,
-    responseBody: { status: 'mock_processed' }
-  };
+  // Mock Target Receiver (for self-testing and local simulation, disabled in production unless forced)
+  if (!isProduction || options.enableMockTarget) {
+    let mockTargetBehavior = {
+      statusCode: 200,
+      delayMs: 15,
+      responseBody: { status: 'mock_processed' }
+    };
 
-  app.post('/mock/target', (req, res) => {
-    setTimeout(() => {
-      res.status(mockTargetBehavior.statusCode).json(mockTargetBehavior.responseBody);
-    }, mockTargetBehavior.delayMs);
-  });
+    app.post('/mock/target', (req, res) => {
+      setTimeout(() => {
+        res.status(mockTargetBehavior.statusCode).json(mockTargetBehavior.responseBody);
+      }, mockTargetBehavior.delayMs);
+    });
 
-  app.post('/mock/config', (req, res) => {
-    mockTargetBehavior = { ...mockTargetBehavior, ...req.body };
-    res.json({ message: 'Mock target configuration updated', config: mockTargetBehavior });
-  });
+    app.post('/mock/config', (req, res) => {
+      mockTargetBehavior = { ...mockTargetBehavior, ...req.body };
+      res.json({ message: 'Mock target configuration updated', config: mockTargetBehavior });
+    });
 
-  app.get('/mock/config', (req, res) => {
-    res.json(mockTargetBehavior);
-  });
+    app.get('/mock/config', (req, res) => {
+      res.json(mockTargetBehavior);
+    });
+  }
 
   // SEO & Web Crawler Discovery
   app.get('/robots.txt', (req, res) => {
@@ -360,7 +471,7 @@ function createServer(options = {}) {
 
   // Root Route: Dashboard if run locally via CLI; Landing page on cloud deployment
   app.get('/', (req, res) => {
-    const isCloudProduction = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.NODE_ENV === 'production');
+    const isCloudProduction = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || isProduction);
     if (!isCloudProduction) {
       return res.sendFile('index.html', { root: path.join(__dirname, 'public') });
     }

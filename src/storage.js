@@ -5,7 +5,7 @@ const fs = require('fs');
 class Storage {
   constructor(dbPath) {
     if (!dbPath) {
-      const dataDir = path.join(__dirname, '..', 'data');
+      const dataDir = process.env.HOOKARMOR_DATA_DIR || path.join(process.cwd(), 'data');
       if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
       }
@@ -18,7 +18,7 @@ class Storage {
   init() {
     try {
       this.db.pragma('journal_mode = WAL');
-      this.db.pragma('synchronous = NORMAL');
+      this.db.pragma('synchronous = FULL');
     } catch (e) {}
 
     this.db.exec(`
@@ -43,6 +43,7 @@ class Storage {
         headers TEXT NOT NULL,
         raw_body TEXT NOT NULL,
         status TEXT NOT NULL, -- 'pending', 'delivered', 'failed', 'replaying'
+        verified INTEGER DEFAULT 0,
         attempts INTEGER DEFAULT 0,
         last_status_code INTEGER,
         last_error TEXT,
@@ -77,14 +78,33 @@ class Storage {
       CREATE INDEX IF NOT EXISTS idx_events_retry ON events(status, next_retry_at);
       CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
     `);
+
+    try {
+      this.db.exec('ALTER TABLE events ADD COLUMN verified INTEGER DEFAULT 0');
+    } catch (e) {}
+
+    // Recover stranded in-flight events from server restart/crash
+    try {
+      this.db.exec("UPDATE events SET status = 'failed', next_retry_at = datetime('now') WHERE status = 'replaying'");
+    } catch (e) {}
   }
 
-  createEndpoint({ id, name, targetUrl, secret = '', alertWebhookUrl = '', autoRetry = 1, maxRetries = 5, concurrencyLimit = 5 }) {
+  createEndpoint({ id, name, targetUrl, secret, alertWebhookUrl = '', autoRetry = 1, maxRetries = 5, concurrencyLimit = 5 }) {
+    const existing = this.getEndpoint(id);
+    const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit)
+      INSERT INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        target_url = excluded.target_url,
+        secret = excluded.secret,
+        alert_webhook_url = excluded.alert_webhook_url,
+        auto_retry = excluded.auto_retry,
+        max_retries = excluded.max_retries,
+        concurrency_limit = excluded.concurrency_limit
     `);
-    stmt.run(id, name, targetUrl, secret, alertWebhookUrl, autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5);
+    stmt.run(id, name, targetUrl, finalSecret, alertWebhookUrl, autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5);
     return this.getEndpoint(id);
   }
 
@@ -98,15 +118,15 @@ class Storage {
 
   findEventByIdempotencyKey(endpointId, idempotencyKey) {
     if (!idempotencyKey) return null;
-    const row = this.db.prepare('SELECT * FROM events WHERE endpoint_id = ? AND idempotency_key = ?').get(endpointId, idempotencyKey);
+    const row = this.db.prepare('SELECT * FROM events WHERE endpoint_id = ? AND idempotency_key = ? ORDER BY created_at ASC LIMIT 1').get(endpointId, idempotencyKey);
     if (!row) return null;
     return { ...row, headers: JSON.parse(row.headers) };
   }
 
-  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending' }) {
+  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', verified = 0 }) {
     const stmt = this.db.prepare(`
-      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, verified, attempts, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
     `);
     stmt.run(
       id,
@@ -116,21 +136,20 @@ class Storage {
       eventType,
       JSON.stringify(headers),
       rawBody,
-      status
+      status,
+      verified ? 1 : 0
     );
     return this.getEvent(id);
   }
 
   recordAttempt({ eventId, statusCode, responseBody = '', errorMessage = '', latencyMs = 0, nextRetryAt = null }) {
+    const isSuccess = statusCode >= 200 && statusCode < 300;
+    const newStatus = isSuccess ? 'delivered' : 'failed';
+
     const insertAttempt = this.db.prepare(`
       INSERT INTO delivery_attempts (event_id, status_code, response_body, error_message, latency_ms, attempted_at)
       VALUES (?, ?, ?, ?, ?, datetime('now'))
     `);
-    insertAttempt.run(eventId, statusCode, responseBody.slice(0, 4000), errorMessage.slice(0, 1000), latencyMs);
-
-    const isSuccess = statusCode >= 200 && statusCode < 300;
-    const newStatus = isSuccess ? 'delivered' : 'failed';
-
     const updateEvent = this.db.prepare(`
       UPDATE events
       SET status = ?,
@@ -142,7 +161,12 @@ class Storage {
           updated_at = datetime('now')
       WHERE id = ?
     `);
-    updateEvent.run(newStatus, statusCode, errorMessage || (isSuccess ? null : `HTTP ${statusCode}`), latencyMs, nextRetryAt, eventId);
+
+    const tx = this.db.transaction(() => {
+      insertAttempt.run(eventId, statusCode, responseBody.slice(0, 4000), errorMessage.slice(0, 1000), latencyMs);
+      updateEvent.run(newStatus, statusCode, errorMessage || (isSuccess ? null : `HTTP ${statusCode}`), latencyMs, nextRetryAt, eventId);
+    });
+    tx();
 
     return this.getEvent(eventId);
   }
@@ -203,7 +227,7 @@ class Storage {
       SELECT e.*, ep.max_retries, ep.target_url, ep.secret, ep.alert_webhook_url
       FROM events e
       JOIN endpoints ep ON e.endpoint_id = ep.id
-      WHERE e.status = 'failed' AND ep.auto_retry = 1 AND e.attempts < ep.max_retries
+      WHERE e.status = 'failed'
     `;
     const params = [];
     if (endpointId) {
@@ -224,9 +248,9 @@ class Storage {
       FROM events e
       JOIN endpoints ep ON e.endpoint_id = ep.id
       WHERE (
-        (e.status = 'failed' AND ep.auto_retry = 1 AND e.attempts < ep.max_retries AND e.next_retry_at IS NOT NULL AND e.next_retry_at <= datetime('now'))
+        (e.status = 'failed' AND ep.auto_retry = 1 AND e.attempts < ep.max_retries AND e.next_retry_at IS NOT NULL AND datetime(e.next_retry_at) <= datetime('now'))
         OR
-        (e.status = 'pending' AND ep.auto_retry = 1 AND e.created_at <= datetime('now', '-20 seconds'))
+        (e.status = 'pending' AND ep.auto_retry = 1 AND datetime(e.created_at) <= datetime('now', '-60 seconds'))
       )
       ORDER BY e.created_at ASC
       LIMIT ?
@@ -246,6 +270,26 @@ class Storage {
     `);
     const info = stmt.run(eventId);
     return info.changes > 0;
+  }
+
+  claimEventForManualReplay(eventId) {
+    const stmt = this.db.prepare(`
+      UPDATE events
+      SET status = 'replaying', updated_at = datetime('now')
+      WHERE id = ? AND status != 'replaying'
+    `);
+    const info = stmt.run(eventId);
+    return info.changes > 0;
+  }
+
+  pruneEvents({ olderThanDays = 30 } = {}) {
+    const stmt = this.db.prepare(`
+      DELETE FROM events
+      WHERE status = 'delivered'
+        AND datetime(created_at) <= datetime('now', '-' || ? || ' days')
+    `);
+    const info = stmt.run(olderThanDays);
+    return info.changes;
   }
 
   addWaitlist(email, source = 'website') {

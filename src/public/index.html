@@ -677,6 +677,25 @@
     let cachedLeads = [];
     let ws = null;
 
+    function esc(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function sanitizeCsvCell(val) {
+      if (val === null || val === undefined) return '""';
+      let str = String(val);
+      if (/^[=+\-@]/.test(str)) {
+        str = "'" + str;
+      }
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+
     function getApiKey() {
       // Stored strictly in ephemeral sessionStorage (destroyed when tab is closed)
       return sessionStorage.getItem('ha_admin_session') || '';
@@ -750,10 +769,10 @@
       } else {
         tbody.innerHTML = cachedLeads.map(l => `
           <tr>
-            <td style="padding: 0.6rem 0.8rem; font-family: var(--font-mono); font-size: 0.8rem;">#${l.id}</td>
-            <td style="padding: 0.6rem 0.8rem; font-weight: 600; color: #60a5fa;">${l.email}</td>
-            <td style="padding: 0.6rem 0.8rem; color: var(--text-muted); font-size: 0.8rem;">${l.source}</td>
-            <td style="padding: 0.6rem 0.8rem; color: var(--text-muted); font-size: 0.8rem;">${l.created_at}</td>
+            <td style="padding: 0.6rem 0.8rem; font-family: var(--font-mono); font-size: 0.8rem;">#${esc(l.id)}</td>
+            <td style="padding: 0.6rem 0.8rem; font-weight: 600; color: #60a5fa;">${esc(l.email)}</td>
+            <td style="padding: 0.6rem 0.8rem; color: var(--text-muted); font-size: 0.8rem;">${esc(l.source)}</td>
+            <td style="padding: 0.6rem 0.8rem; color: var(--text-muted); font-size: 0.8rem;">${esc(l.created_at)}</td>
           </tr>
         `).join('');
       }
@@ -769,7 +788,7 @@
         alert('No leads to export.');
         return;
       }
-      const csvContent = 'id,email,source,created_at\n' + cachedLeads.map(l => `${l.id},"${l.email}","${l.source}","${l.created_at}"`).join('\n');
+      const csvContent = 'id,email,source,created_at\n' + cachedLeads.map(l => `${l.id},${sanitizeCsvCell(l.email)},${sanitizeCsvCell(l.source)},${sanitizeCsvCell(l.created_at)}`).join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -875,18 +894,18 @@
 
         container.innerHTML = cachedEndpoints.map(ep => `
           <div class="endpoint-item">
-            <div class="endpoint-name">${ep.name}</div>
-            <div class="endpoint-url" title="Ingress URL">${window.location.origin}/in/${ep.id}</div>
-            <div class="target-url">🎯 <strong>Target:</strong> ${ep.target_url}</div>
+            <div class="endpoint-name">${esc(ep.name)}</div>
+            <div class="endpoint-url" title="Ingress URL">${window.location.origin}/in/${esc(ep.id)}</div>
+            <div class="target-url">🎯 <strong>Target:</strong> ${esc(ep.target_url)}</div>
             <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.75rem;">
               <span>Auto-Retry: <strong>${ep.auto_retry ? 'Yes' : 'No'}</strong></span>
-              <span>Max: <strong>${ep.max_retries} attempts</strong></span>
+              <span>Max: <strong>${esc(ep.max_retries)} attempts</strong></span>
             </div>
           </div>
         `).join('');
 
         simSelect.innerHTML = cachedEndpoints.map(ep => `
-          <option value="${ep.id}">${ep.name} (/in/${ep.id})</option>
+          <option value="${esc(ep.id)}">${esc(ep.name)} (/in/${esc(ep.id)})</option>
         `).join('');
       } catch (e) {
         console.error(e);
@@ -916,22 +935,22 @@
           const badgeClass = evt.status === 'delivered' ? 'badge-delivered' : (evt.status === 'failed' ? 'badge-failed' : 'badge-pending');
           const time = new Date(evt.created_at).toLocaleTimeString();
           const latency = evt.last_latency_ms ? `${evt.last_latency_ms}ms` : '-';
-          const providerClass = evt.provider.includes('stripe') ? 'stripe' : (evt.provider.includes('shopify') ? 'shopify' : (evt.provider.includes('github') ? 'github' : ''));
+          const providerClass = evt.provider && evt.provider.includes('stripe') ? 'stripe' : (evt.provider && evt.provider.includes('shopify') ? 'shopify' : (evt.provider && evt.provider.includes('github') ? 'github' : ''));
 
           return `
             <tr>
-              <td><span class="badge ${badgeClass}">${evt.status}</span></td>
+              <td><span class="badge ${esc(badgeClass)}">${esc(evt.status)}</span></td>
               <td>
-                <span class="badge-provider ${providerClass}">${evt.provider}</span>
-                <span style="font-weight: 600; margin-left: 0.35rem;">${evt.event_type || evt.id}</span>
+                <span class="badge-provider ${esc(providerClass)}">${esc(evt.provider)}</span>
+                <span style="font-weight: 600; margin-left: 0.35rem;">${esc(evt.event_type || evt.id)}</span>
               </td>
-              <td><span class="code-mono" style="color: var(--text-muted);">${evt.endpoint_id}</span></td>
-              <td><span class="code-mono">${latency}</span></td>
-              <td><span class="code-mono">${evt.attempts}</span></td>
-              <td style="color: var(--text-muted);">${time}</td>
+              <td><span class="code-mono" style="color: var(--text-muted);">${esc(evt.endpoint_id)}</span></td>
+              <td><span class="code-mono">${esc(latency)}</span></td>
+              <td><span class="code-mono">${esc(evt.attempts)}</span></td>
+              <td style="color: var(--text-muted);">${esc(time)}</td>
               <td style="display: flex; gap: 0.5rem;">
-                <button class="btn btn-secondary btn-sm" onclick="inspectEvent('${evt.id}')">Inspect</button>
-                <button class="btn btn-primary btn-sm" onclick="replayEvent('${evt.id}')">Replay</button>
+                <button class="btn btn-secondary btn-sm" onclick="inspectEvent('${esc(evt.id)}')">Inspect</button>
+                <button class="btn btn-primary btn-sm" onclick="replayEvent('${esc(evt.id)}')">Replay</button>
               </td>
             </tr>
           `;
@@ -1012,40 +1031,40 @@
       try {
         const res = await fetch(`/api/events/${id}`, { headers: getAuthHeaders() });
         const evt = await res.json();
-        document.getElementById('modal-event-title').textContent = `Inspection: ${evt.id}`;
+        document.getElementById('modal-event-title').textContent = `Inspection: ${esc(evt.id)}`;
         
         let attemptsHtml = '<p style="color: var(--text-muted); font-size: 0.85rem;">No attempts recorded.</p>';
         if (evt.attempts && evt.attempts.length > 0) {
           attemptsHtml = evt.attempts.map((att, i) => `
             <div style="background: #090d16; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.8rem;">
               <div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem;">
-                <strong>Attempt #${evt.attempts.length - i}</strong>
+                <strong>Attempt #${esc(evt.attempts.length - i)}</strong>
                 <span class="badge ${att.status_code >= 200 && att.status_code < 300 ? 'badge-delivered' : 'badge-failed'}">
-                  HTTP ${att.status_code || 'Err'} (${att.latency_ms}ms)
+                  HTTP ${esc(att.status_code || 'Err')} (${esc(att.latency_ms)}ms)
                 </span>
               </div>
-              <div style="color: var(--text-muted);">${att.attempted_at}</div>
-              ${att.error_message ? `<div style="color: var(--accent-rose); margin-top: 0.25rem;">${att.error_message}</div>` : ''}
-              ${att.response_body ? `<div class="code-block" style="margin-top: 0.5rem; max-height: 120px;">${att.response_body}</div>` : ''}
+              <div style="color: var(--text-muted);">${esc(att.attempted_at)}</div>
+              ${att.error_message ? `<div style="color: var(--accent-rose); margin-top: 0.25rem;">${esc(att.error_message)}</div>` : ''}
+              ${att.response_body ? `<div class="code-block" style="margin-top: 0.5rem; max-height: 120px;">${esc(att.response_body)}</div>` : ''}
             </div>
           `).join('');
         }
 
         document.getElementById('modal-event-body').innerHTML = `
           <div style="display: flex; gap: 1rem; align-items: center;">
-            <span class="badge ${evt.status === 'delivered' ? 'badge-delivered' : 'badge-failed'}">${evt.status}</span>
-            <span style="font-weight: 700;">${evt.event_type || 'Custom Payload'}</span>
-            <span style="color: var(--text-muted); font-size: 0.8rem;">Received: ${evt.created_at}</span>
+            <span class="badge ${evt.status === 'delivered' ? 'badge-delivered' : 'badge-failed'}">${esc(evt.status)}</span>
+            <span style="font-weight: 700;">${esc(evt.event_type || 'Custom Payload')}</span>
+            <span style="color: var(--text-muted); font-size: 0.8rem;">Received: ${esc(evt.created_at)}</span>
           </div>
 
           <div>
             <h4 style="font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--text-muted);">Incoming Headers</h4>
-            <div class="code-block">${JSON.stringify(evt.headers, null, 2)}</div>
+            <div class="code-block">${esc(JSON.stringify(evt.headers, null, 2))}</div>
           </div>
 
           <div>
             <h4 style="font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--text-muted);">Raw Body Payload</h4>
-            <div class="code-block">${evt.raw_body}</div>
+            <div class="code-block">${esc(evt.raw_body)}</div>
           </div>
 
           <div>
@@ -1055,7 +1074,7 @@
 
           <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
             <button class="btn btn-secondary" onclick="closeInspectorModal()">Close</button>
-            <button class="btn btn-primary" onclick="replayEvent('${evt.id}')">Replay Event</button>
+            <button class="btn btn-primary" onclick="replayEvent('${esc(evt.id)}')">Replay Event</button>
           </div>
         `;
         document.getElementById('inspector-modal').style.display = 'flex';
@@ -1132,6 +1151,12 @@
     function initWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      ws.onopen = () => {
+        const token = getApiKey();
+        if (token) {
+          ws.send(JSON.stringify({ type: 'auth', token }));
+        }
+      };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         if (msg.type === 'event:received' || msg.type === 'delivery') {
