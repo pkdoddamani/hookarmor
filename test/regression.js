@@ -428,6 +428,47 @@ test('retention pruning removes old delivered events but keeps failed ones', asy
   } finally { await ha.close(); }
 });
 
+test('DELETE /api/endpoints/:id and /api/events/:id remove rows and delivery attempts', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_del', name: 'ep_del', targetUrl: 'https://example.com/del' });
+    ha.storage.saveEvent({ id: 'evt_del', endpointId: 'ep_del', provider: 'generic', headers: {}, rawBody: '{}', status: 'failed' });
+    ha.storage.recordAttempt({ eventId: 'evt_del', statusCode: 500, responseBody: 'fail', errorMessage: 'err', latencyMs: 10 });
+    
+    // Delete event
+    const resEvt = await fetch(`${ha.base}/api/events/evt_del`, { method: 'DELETE' });
+    assert.strictEqual(resEvt.status, 200);
+    assert.strictEqual(ha.storage.getEvent('evt_del'), null);
+    assert.strictEqual(ha.storage.getAttempts('evt_del').length, 0);
+
+    // Delete endpoint
+    const resEp = await fetch(`${ha.base}/api/endpoints/ep_del`, { method: 'DELETE' });
+    assert.strictEqual(resEp.status, 200);
+    assert.strictEqual(ha.storage.getEndpoint('ep_del'), undefined);
+  } finally { await ha.close(); }
+});
+
+test('outbound x-hookarmor-original-timestamp is formatted with UTC Z suffix', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_ts', name: 'ep_ts', targetUrl: target.url });
+    await fetch(`${ha.base}/in/ep_ts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ping: true })
+    });
+    await sleep(60);
+    assert.strictEqual(target.requests.length, 1);
+    const ts = target.requests[0].headers['x-hookarmor-original-timestamp'];
+    assert.ok(ts && ts.endsWith('Z'), `Must end with Z: ${ts}`);
+    assert.ok(!isNaN(Date.parse(ts)));
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

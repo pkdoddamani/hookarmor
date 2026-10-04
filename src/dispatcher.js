@@ -253,7 +253,12 @@ class Dispatcher extends EventEmitter {
     headers['content-length'] = String(rawBuffer.length);
     headers['x-hookarmor-delivery-id'] = event.id;
     headers['x-hookarmor-attempt'] = String(event.attempts + 1);
-    headers['x-hookarmor-original-timestamp'] = event.created_at;
+    // Strict ISO-8601 UTC timestamp with Z to prevent client-side local timezone parsing skew
+    const createdAtStr = String(event.created_at || '');
+    const originalTimestamp = createdAtStr.includes('T')
+      ? (createdAtStr.endsWith('Z') ? createdAtStr : `${createdAtStr}Z`)
+      : (createdAtStr ? `${createdAtStr.replace(' ', 'T')}Z` : new Date().toISOString());
+    headers['x-hookarmor-original-timestamp'] = originalTimestamp;
     const isReplay = replay || event.attempts > 0;
     headers['x-hookarmor-is-replay'] = isReplay ? 'true' : 'false';
 

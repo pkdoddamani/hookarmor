@@ -464,7 +464,7 @@
         <div class="card-icon" style="background: rgba(56, 189, 248, 0.1); color: #38bdf8;">💻</div>
         <h3>Zero-Friction Local Tunnel</h3>
         <p>
-          Run <code>node bin/hookarmor.js listen http://localhost:3000/api/webhook</code> to test production events against your local IDE with hot reloading and zero ngrok hassles.
+          Run <code>hookarmor listen http://localhost:3000/api/webhook</code> to proxy and replay captured webhook events straight into your local server with automatic signature verification.
         </p>
       </div>
     </div>
@@ -515,7 +515,7 @@
           <li>✓ <strong>250,000 events / month</strong></li>
           <li>✓ <strong>90-day retention</strong> in DLQ</li>
           <li>✓ Unlimited Endpoints</li>
-          <li>✓ Automated Circuit Breakers</li>
+          <li>✓ Per-Endpoint Concurrency Limiting</li>
           <li>✓ Team Workspaces (Beta Roadmap)</li>
           <li>✓ High-Concurrency Queue Worker</li>
         </ul>

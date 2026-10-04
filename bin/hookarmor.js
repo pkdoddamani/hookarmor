@@ -41,8 +41,10 @@ program
   .command('start')
   .description('Start HookArmor server with web dashboard and ingress proxy')
   .option('-p, --port <number>', 'Port to listen on', process.env.PORT || '4000')
+  .option('-H, --host <host>', 'Host address to bind to', process.env.HOOKARMOR_HOST || process.env.HOST || (process.env.HOOKARMOR_API_KEY || process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'))
   .action((options) => {
     const port = parseInt(options.port, 10);
+    const host = options.host;
     const { server, storage, mockEnabled } = startServerOrExit();
 
     // Ensure a default mock endpoint exists for first-time onboarding (local simulation only)
@@ -57,13 +59,14 @@ program
       });
     }
 
-    server.listen(port, () => {
+    server.listen(port, host, () => {
       console.log(chalk.blue.bold('\n🛡️  HookArmor Webhook Sentinel is LIVE!'));
       console.log(chalk.gray('─────────────────────────────────────────'));
-      console.log(`📡 Ingress Gateway : ${chalk.cyan(`http://localhost:${port}/in/:endpointId`)}`);
-      console.log(`📊 Web Dashboard   : ${chalk.green.bold(`http://localhost:${port}/dashboard`)}`);
+      const displayHost = (host === '0.0.0.0' || host === '127.0.0.1') ? 'localhost' : host;
+      console.log(`📡 Ingress Gateway : ${chalk.cyan(`http://${displayHost}:${port}/in/:endpointId`)}`);
+      console.log(`📊 Web Dashboard   : ${chalk.green.bold(`http://${displayHost}:${port}/dashboard`)}`);
       if (mockEnabled) {
-        console.log(`⚙️  Mock Receiver  : ${chalk.yellow(`http://localhost:${port}/mock/target`)}`);
+        console.log(`⚙️  Mock Receiver  : ${chalk.yellow(`http://${displayHost}:${port}/mock/target`)}`);
       }
       console.log(chalk.gray('─────────────────────────────────────────'));
       console.log(chalk.white('Press Ctrl+C to stop.\n'));
@@ -117,7 +120,7 @@ program
   .action(async (eventId, options) => {
     const baseUrl = options.url.replace(/\/$/, '');
     try {
-      if (options.failed || !eventId) {
+      if (options.failed) {
         console.log(chalk.yellow('🔄 Replaying all dead-letter events...'));
         const res = await fetch(`${baseUrl}/api/events/replay-all`, { method: 'POST', headers: apiHeaders(options.apiKey), body: '{}' });
         const data = await readJson(res);
@@ -125,7 +128,7 @@ program
         if (data.remaining > 0) {
           console.log(chalk.yellow(`   ${data.remaining} failed events still queued; run the command again to continue.`));
         }
-      } else {
+      } else if (eventId) {
         console.log(chalk.yellow(`🔄 Replaying event ${eventId}...`));
         const res = await fetch(`${baseUrl}/api/events/${encodeURIComponent(eventId)}/replay`, { method: 'POST', headers: apiHeaders(options.apiKey), body: '{}' });
         const data = await readJson(res);
@@ -135,6 +138,10 @@ program
           console.log(chalk.red(`❌ Replay failed: HTTP ${data.statusCode} (${data.errorMessage || 'Target rejected'})`));
           process.exitCode = 1;
         }
+      } else {
+        console.error(chalk.red('✖ Missing argument: specify an [eventId] or pass --failed to replay all dead-letter events.'));
+        console.log(chalk.gray('  Usage: hookarmor replay <eventId>  OR  hookarmor replay --failed\n'));
+        process.exitCode = 1;
       }
     } catch (err) {
       console.error(chalk.red(`Replay request to ${baseUrl} failed: ${err.message}`));

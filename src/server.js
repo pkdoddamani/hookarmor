@@ -135,7 +135,12 @@ function createServer(options = {}) {
     path: '/ws',
     maxPayload: 4096,
     // Without an API key the feed is only served to localhost (blocks DNS-rebinding pages)
-    verifyClient: (info) => Boolean(apiKey) || LOCAL_HOSTNAMES.has(hostnameOf(info.req.headers.host))
+    verifyClient: (info) => {
+      if (apiKey) return true;
+      const remote = info.req.socket && info.req.socket.remoteAddress;
+      const isLoopbackRemote = !remote || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      return isLoopbackRemote && LOCAL_HOSTNAMES.has(hostnameOf(info.req.headers.host));
+    }
   });
 
   wss.on('connection', (socket) => {
@@ -319,10 +324,12 @@ function createServer(options = {}) {
 
     if (!apiKey) {
       if (!isDemoMode) {
-        // Open local-dev mode: only answer to localhost names, so a web page cannot reach this
-        // API through DNS rebinding
-        if (!LOCAL_HOSTNAMES.has(hostnameOf(req.headers.host))) {
-          return res.status(403).json({ error: 'Without HOOKARMOR_API_KEY the management API is only served on localhost' });
+        // Open local-dev mode: only answer to loopback connections and localhost host names,
+        // so LAN attackers or web pages through DNS rebinding cannot reach this API
+        const remote = req.socket && req.socket.remoteAddress;
+        const isLoopbackRemote = !remote || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+        if (!isLoopbackRemote || !LOCAL_HOSTNAMES.has(hostnameOf(req.headers.host))) {
+          return res.status(403).json({ error: 'Without HOOKARMOR_API_KEY the management API is only accessible locally from loopback interfaces (localhost/127.0.0.1)' });
         }
         return next();
       }
@@ -352,7 +359,9 @@ function createServer(options = {}) {
   app.use('/api', (req, res, next) => {
     const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     const isJson = contentType === 'application/json' || contentType.endsWith('+json');
-    if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS' && !isJson) {
+    const isBodyMethod = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH';
+    const hasBody = Boolean(req.headers['content-length'] && req.headers['content-length'] !== '0');
+    if ((isBodyMethod || hasBody) && !isJson) {
       return res.status(415).json({ error: 'Content-Type must be application/json' });
     }
     next();
@@ -406,6 +415,13 @@ function createServer(options = {}) {
     res.json(publicEndpoint(endpoint));
   });
 
+  // Delete an endpoint
+  app.delete('/api/endpoints/:id', (req, res) => {
+    const deleted = storage.deleteEndpoint(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Endpoint not found' });
+    res.json({ success: true, message: 'Endpoint deleted' });
+  });
+
   // List Events
   app.get('/api/events', (req, res) => {
     const { endpointId, status, limit, offset } = req.query;
@@ -424,6 +440,13 @@ function createServer(options = {}) {
     if (!event) return res.status(404).json({ error: 'Event not found' });
     const attempts = storage.getAttempts(req.params.id);
     res.json({ ...event, attempts });
+  });
+
+  // Delete a specific event and its attempts
+  app.delete('/api/events/:id', (req, res) => {
+    const deleted = storage.deleteEvent(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Event not found' });
+    res.json({ success: true, message: 'Event deleted' });
   });
 
   // Replay a specific event

@@ -120,6 +120,11 @@ class Storage {
     return this.db.prepare('SELECT * FROM endpoints ORDER BY created_at DESC').all();
   }
 
+  deleteEndpoint(id) {
+    const info = this.db.prepare('DELETE FROM endpoints WHERE id = ?').run(id);
+    return info.changes > 0;
+  }
+
   // Any stored copy counts: once HookArmor has custody, a provider re-send is redundant
   findEventByIdempotencyKey(endpointId, idempotencyKey) {
     if (!idempotencyKey) return null;
@@ -186,6 +191,14 @@ class Storage {
 
   getAttempts(eventId) {
     return this.db.prepare('SELECT * FROM delivery_attempts WHERE event_id = ? ORDER BY id DESC').all(eventId);
+  }
+
+  deleteEvent(id) {
+    const deleteTx = this.db.transaction((eventId) => {
+      this.db.prepare('DELETE FROM delivery_attempts WHERE event_id = ?').run(eventId);
+      return this.db.prepare('DELETE FROM events WHERE id = ?').run(eventId).changes > 0;
+    });
+    return deleteTx(id);
   }
 
   listEvents({ endpointId = null, status = null, limit = 50, offset = 0 } = {}) {

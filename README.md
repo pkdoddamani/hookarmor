@@ -3,8 +3,8 @@
 > **Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-34%20Passing-brightgreen.svg)]()
-[![Status: Production Ready](https://img.shields.io/badge/Status-v1.1.0-blueviolet.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-36%20Passing-brightgreen.svg)]()
+[![Status: Production Ready](https://img.shields.io/badge/Status-v1.1.1-blueviolet.svg)]()
 
 ---
 
@@ -52,8 +52,8 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 2. **Cryptographic Header & Signature Preservation**: Forwards exact raw bytes, `stripe-signature`, `x-shopify-hmac-sha256`, and timestamps.
 3. **Dead-Letter Queue (DLQ)**: If your server returns 500, 502, 504, 429, or times out, HookArmor safely preserves the raw event with full error diagnostics.
 4. **Instant Alerts**: Sends immediate Slack / Discord webhooks when an endpoint begins failing.
-5. **1-Click Bulk Replay**: As soon as you push your code fix, hit **Replay All Dead-Letter** in the Web UI or run `hookarmor replay --failed` to restore all customer transactions in 2 seconds.
-6. **Local Dev Tunnel**: `hookarmor listen http://localhost:3000/api/webhooks` to replay production webhooks straight into localhost debuggers.
+5. **1-Click Bulk Replay**: As soon as you push your code fix, hit **Replay All Dead-Letter** in the Web UI or run `hookarmor replay --failed` to re-deliver customer transactions.
+6. **Local Dev Relay**: `hookarmor listen http://localhost:3000/api/webhooks` to proxy webhooks straight into local dev servers with automatic re-signing.
 
 ---
 
@@ -224,7 +224,9 @@ HookArmor returns an immediate `200 OK` to Stripe and Shopify in `<10ms` to prot
 
 ## 📦 Hosted Cloud & Self-Hosting
 
-| Feature | Self-Hosted (MIT) | Hosted Cloud Starter ($29/mo) | Hosted Cloud Pro ($79/mo) |
+HookArmor is 100% free and open-source under the MIT license. Managed cloud tiers are currently in private waitlist preview.
+
+| Feature | Self-Hosted OSS (MIT) | Hosted Cloud Starter (Waitlist) | Hosted Cloud Pro (Waitlist) |
 |---|---|---|---|
 | **Ingress Proxy & Buffer** | Unlimited | 50,000 events/mo | 500,000 events/mo |
 | **Instant 200 OK Ack** | Yes (<10ms) | Yes (<10ms) | Yes (<10ms) |
@@ -232,9 +234,9 @@ HookArmor returns an immediate `200 OK` to Stripe and Shopify in `<10ms` to prot
 | **Stripe Signature Re-Signing** | Yes | Yes | Yes |
 | **Background Auto-Retries** | Yes | Yes | Yes |
 | **Concurrency Pool Limiter** | Yes | Yes | Yes |
-| **Event Retention** | Local Disk | 30 days | 90 days |
-| **Alerting** | Discord / Slack Webhook | Discord / Slack Webhook | Priority alerts + PagerDuty |
-| **Infrastructure** | Your own server | Fully managed & redundant | Fully managed & redundant |
+| **Event Retention** | Local Disk (Configurable) | 30 days | 90 days |
+| **Alerting** | Discord / Slack Webhooks | Discord / Slack Webhooks | Priority Webhooks |
+| **Infrastructure** | Single-node Docker / VPS | Fully managed & redundant | Fully managed & redundant |
 
 ---
 
