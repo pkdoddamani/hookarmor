@@ -189,8 +189,24 @@ function createServer(options = {}) {
   // Serve static UI assets
   app.use('/static', express.static(path.join(__dirname, 'public')));
 
+  const ingressLimiter = createRateLimiter({
+    limit: clampInt(process.env.HOOKARMOR_INGRESS_RATE_LIMIT, 600, 1, 50000),
+    windowMs: 60000
+  });
+  const maxPendingEvents = clampInt(process.env.HOOKARMOR_MAX_PENDING_EVENTS, 50000, 100, 1000000);
+
   // Ingress endpoint for webhooks - uses raw body parser to preserve raw bytes
   app.post('/in/:endpointId', express.raw({ type: '*/*', limit: maxBody }), (req, res) => {
+    // Ingress rate limiting per IP
+    if (!ingressLimiter(req.ip)) {
+      return res.status(429).json({ error: 'Too many ingress requests from this IP; rate limit exceeded' });
+    }
+
+    // Storage capacity backpressure protection
+    if (storage.getPendingCount && storage.getPendingCount() >= maxPendingEvents) {
+      return res.status(503).json({ error: 'Ingress queue capacity reached. System is under high load; retry shortly.' });
+    }
+
     const endpointId = req.params.endpointId;
     const endpoint = storage.getEndpoint(endpointId);
 
@@ -198,8 +214,11 @@ function createServer(options = {}) {
       return res.status(404).json({ error: 'HookArmor endpoint not found' });
     }
 
-    const rawBodyBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
-    const rawBody = rawBodyBuffer.toString('utf8');
+    const rawBodyBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    let rawBody = '';
+    try {
+      rawBody = rawBodyBuffer.toString('utf8');
+    } catch (_) {}
     const headers = { ...req.headers };
 
     // Detect provider & idempotency key
@@ -243,7 +262,7 @@ function createServer(options = {}) {
     // 0. Verify signature on ingress if endpoint secret is configured
     let verified = false;
     if (endpoint.secret) {
-      const verification = Dispatcher.verifyIngressSignature(provider, rawBody, headers, endpoint.secret);
+      const verification = Dispatcher.verifyIngressSignature(provider, rawBodyBuffer, headers, endpoint.secret);
       if (!verification.valid) {
         return res.status(400).json({
           error: 'Webhook signature verification failed',
@@ -279,7 +298,7 @@ function createServer(options = {}) {
         provider,
         eventType,
         headers,
-        rawBody,
+        rawBody: rawBodyBuffer,
         status: 'replaying',
         verified
       });
@@ -431,7 +450,10 @@ function createServer(options = {}) {
       limit: clampInt(limit, 50, 1, 500),
       offset: clampInt(offset, 0, 0, Number.MAX_SAFE_INTEGER)
     });
-    res.json(events);
+    res.json(events.map(e => ({
+      ...e,
+      raw_body: Buffer.isBuffer(e.raw_body) ? e.raw_body.toString('utf8') : String(e.raw_body || '')
+    })));
   });
 
   // Get single event with attempts
@@ -439,7 +461,11 @@ function createServer(options = {}) {
     const event = storage.getEvent(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
     const attempts = storage.getAttempts(req.params.id);
-    res.json({ ...event, attempts });
+    res.json({
+      ...event,
+      raw_body: Buffer.isBuffer(event.raw_body) ? event.raw_body.toString('utf8') : String(event.raw_body || ''),
+      attempts
+    });
   });
 
   // Delete a specific event and its attempts

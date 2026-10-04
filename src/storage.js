@@ -134,6 +134,7 @@ class Storage {
   }
 
   saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', verified = false }) {
+    const rawBuffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
     const stmt = this.db.prepare(`
       INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, verified, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'), datetime('now'))
@@ -145,11 +146,15 @@ class Storage {
       provider,
       eventType,
       JSON.stringify(headers),
-      rawBody,
+      rawBuffer,
       status,
       verified ? 1 : 0
     );
     return this.getEvent(id);
+  }
+
+  getPendingCount() {
+    return this.db.prepare("SELECT count(*) as count FROM events WHERE status IN ('pending', 'replaying')").get().count;
   }
 
   recordAttempt({ eventId, statusCode, responseBody = '', errorMessage = '', latencyMs = 0, nextRetryAt = null }) {

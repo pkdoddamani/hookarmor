@@ -17,7 +17,10 @@ function svixKey(secret) {
 }
 
 function svixSignature(secret, msgId, timestamp, rawBody) {
-  return crypto.createHmac('sha256', svixKey(secret)).update(`${msgId}.${timestamp}.${rawBody}`).digest('base64');
+  const hmac = crypto.createHmac('sha256', svixKey(secret));
+  hmac.update(Buffer.from(`${msgId}.${timestamp}.`, 'utf8'));
+  hmac.update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'));
+  return hmac.digest('base64');
 }
 
 class Dispatcher extends EventEmitter {
@@ -62,10 +65,10 @@ class Dispatcher extends EventEmitter {
           return { valid: false, reason: `Timestamp outside tolerance (${toleranceSec}s)` };
         }
 
-        const expectedSig = crypto
-          .createHmac('sha256', secret)
-          .update(`${timestampStr}.${rawBody}`)
-          .digest('hex');
+        const hmac = crypto.createHmac('sha256', secret);
+        hmac.update(Buffer.from(`${timestampStr}.`, 'utf8'));
+        hmac.update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'));
+        const expectedSig = hmac.digest('hex');
 
         if (!signatures.some((sig) => safeEqual(expectedSig, sig))) {
           return { valid: false, reason: 'Signature mismatch' };
@@ -79,7 +82,7 @@ class Dispatcher extends EventEmitter {
 
         const expectedSig = crypto
           .createHmac('sha256', secret)
-          .update(rawBody)
+          .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'))
           .digest('base64');
 
         if (!safeEqual(expectedSig, hmac)) {
@@ -92,7 +95,10 @@ class Dispatcher extends EventEmitter {
         const sig = headers['x-hub-signature-256'];
         if (!sig) return { valid: false, reason: 'Missing X-Hub-Signature-256 header' };
 
-        const expectedSig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        const expectedSig = 'sha256=' + crypto
+          .createHmac('sha256', secret)
+          .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'))
+          .digest('hex');
         if (!safeEqual(expectedSig, sig)) {
           return { valid: false, reason: 'GitHub signature mismatch' };
         }
@@ -137,19 +143,22 @@ class Dispatcher extends EventEmitter {
     try {
       if (provider === 'stripe') {
         const freshTimestamp = Math.floor(Date.now() / 1000);
-        const freshSignature = crypto
-          .createHmac('sha256', secret)
-          .update(`${freshTimestamp}.${rawBody}`)
-          .digest('hex');
+        const hmac = crypto.createHmac('sha256', secret);
+        hmac.update(Buffer.from(`${freshTimestamp}.`, 'utf8'));
+        hmac.update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'));
+        const freshSignature = hmac.digest('hex');
         modified['stripe-signature'] = `t=${freshTimestamp},v1=${freshSignature}`;
       } else if (provider === 'shopify') {
         const freshHmac = crypto
           .createHmac('sha256', secret)
-          .update(rawBody)
+          .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'))
           .digest('base64');
         modified['x-shopify-hmac-sha256'] = freshHmac;
       } else if (provider === 'github') {
-        const freshSig = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        const freshSig = 'sha256=' + crypto
+          .createHmac('sha256', secret)
+          .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'))
+          .digest('hex');
         modified['x-hub-signature-256'] = freshSig;
       } else if (provider === 'clerk/svix' && modified['svix-id']) {
         const freshTimestamp = String(Math.floor(Date.now() / 1000));
@@ -229,15 +238,22 @@ class Dispatcher extends EventEmitter {
       headers['x-hookarmor-original-svix-signature'] = event.headers['svix-signature'];
     }
 
+    const rawBuffer = Buffer.isBuffer(event.raw_body)
+      ? event.raw_body
+      : Buffer.from(String(event.raw_body || ''), 'utf8');
+
     // Re-sign outbound headers if endpoint secret is configured (Transparent Zero-Code-Change Mode)
     if (endpoint.secret) {
-      headers = this.signHeaders(event.provider, event.raw_body, headers, endpoint.secret);
+      headers = this.signHeaders(event.provider, rawBuffer, headers, endpoint.secret);
     }
 
     // Isolated Trust Domain mode: vouch only for events whose signature was verified at ingress
     if (this.signingSecret && event.verified) {
       const freshTs = Math.floor(Date.now() / 1000);
-      const internalSig = crypto.createHmac('sha256', this.signingSecret).update(`${freshTs}.${event.raw_body}`).digest('hex');
+      const hmac = crypto.createHmac('sha256', this.signingSecret);
+      hmac.update(Buffer.from(`${freshTs}.`, 'utf8'));
+      hmac.update(rawBuffer);
+      const internalSig = hmac.digest('hex');
       headers['x-hookarmor-signature'] = `t=${freshTs},v1=${internalSig}`;
     }
 
@@ -249,7 +265,6 @@ class Dispatcher extends EventEmitter {
     delete headers['transfer-encoding'];
     delete headers['expect'];
 
-    const rawBuffer = Buffer.from(event.raw_body, 'utf8');
     headers['content-length'] = String(rawBuffer.length);
     headers['x-hookarmor-delivery-id'] = event.id;
     headers['x-hookarmor-attempt'] = String(event.attempts + 1);

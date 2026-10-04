@@ -3,7 +3,7 @@
 > **Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-36%20Passing-brightgreen.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-38%20Passing-brightgreen.svg)]()
 [![Status: Production Ready](https://img.shields.io/badge/Status-v1.1.1-blueviolet.svg)]()
 
 ---

@@ -27,10 +27,11 @@ async function startTarget({ status = 200, hold = false } = {}) {
   const pending = [];
   const target = { status, requests };
   const server = http.createServer((req, res) => {
-    let body = '';
-    req.on('data', (c) => { body += c; });
+    const chunks = [];
+    req.on('data', (c) => { chunks.push(c); });
     req.on('end', () => {
-      requests.push({ headers: req.headers, body });
+      const bodyBuffer = Buffer.concat(chunks);
+      requests.push({ headers: req.headers, body: bodyBuffer.toString('utf8'), bodyBuffer });
       const respond = () => { res.writeHead(target.status); res.end('ok'); };
       if (hold) pending.push(respond); else respond();
     });
@@ -466,6 +467,48 @@ test('outbound x-hookarmor-original-timestamp is formatted with UTC Z suffix', a
   } finally {
     await ha.close();
     target.close();
+  }
+});
+
+test('arbitrary non-UTF-8 bytes (61 ff 62) are preserved byte-for-byte on dispatch without mutation', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_bin', name: 'ep_bin', targetUrl: target.url });
+    const rawPayload = Buffer.from([0x61, 0xff, 0x62]);
+    await fetch(`${ha.base}/in/ep_bin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: rawPayload
+    });
+    await sleep(60);
+    assert.strictEqual(target.requests.length, 1);
+    assert.deepStrictEqual(target.requests[0].bodyBuffer, rawPayload, 'Must preserve exact bytes 61 ff 62 without Unicode replacement corruption');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('ingress rate limiting throttles requests per client IP when limit is reached', async () => {
+  const orig = process.env.HOOKARMOR_INGRESS_RATE_LIMIT;
+  process.env.HOOKARMOR_INGRESS_RATE_LIMIT = '3';
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_rl', name: 'ep_rl', targetUrl: 'https://example.com/h' });
+    const statuses = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await fetch(`${ha.base}/in/ep_rl`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ i })
+      });
+      statuses.push(res.status);
+    }
+    assert.deepStrictEqual(statuses, [200, 200, 200, 429]);
+  } finally {
+    process.env.HOOKARMOR_INGRESS_RATE_LIMIT = orig || '';
+    await ha.close();
   }
 });
 
