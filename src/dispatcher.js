@@ -224,7 +224,11 @@ class Dispatcher extends EventEmitter {
   }
 
   pendingDeliveries() {
-    return this.activeDeliveries;
+    let queued = 0;
+    for (const q of this.waitQueues.values()) {
+      queued += q.length;
+    }
+    return this.activeDeliveries + queued;
   }
 
   async drain(timeoutMs = 15000) {

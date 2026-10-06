@@ -211,7 +211,7 @@ HookArmor supports two forwarding architectures depending on your team's securit
 
 ## ⚠️ Production Durability: The Early 200 OK Tradeoff
 
-HookArmor returns an immediate `200 OK` to Stripe and Shopify in `<10ms` to protect your ingress latency and prevent providers from marking your endpoint failed during downstream outages.
+HookArmor returns an immediate `200 OK` to Stripe and Shopify (sub-10ms when idle; measured p50 64ms, p90 153ms under concurrency 50 with `synchronous=FULL` fsync commits, sustaining ~360 events/s) to protect your ingress latency and prevent providers from marking your endpoint failed during downstream outages.
 
 **What this means for production operators:**
 * Once HookArmor returns `200 OK`, Stripe considers the webhook delivered and **halts its external retry backup**.
@@ -228,16 +228,16 @@ HookArmor is 100% free and open-source under the MIT license, architected specif
 
 * **Single-Process Simplicity**: Operates entirely in a single Node.js process using embedded SQLite with Write-Ahead Logging (`WAL`) and `synchronous=FULL`. It consumes <50MB RAM and eliminates the operational overhead of running external message brokers (Kafka, RabbitMQ, SQS, or Redis).
 * **Scope & Boundaries**: HookArmor is intended to run on the same VPS, container host, or private network cluster as your downstream web application. It is **not** a distributed multi-region cluster broker.
-* **Persistent Disk Required**: Because events are durably acknowledged to providers in `<5ms`, your container volume (`/app/data`) must be backed by a persistent disk or volume mount.
+* **Persistent Disk Required**: Because events are durably acknowledged to providers with immediate fsync commits, your container volume (`/app/data`) must be backed by a persistent disk or volume mount.
 
 ---
 
 ## 📊 Prometheus & Grafana Metrics
 
-HookArmor includes a native, zero-dependency Prometheus exposition endpoint at `GET /metrics`. Scrape this endpoint into your existing Prometheus or VictoriaMetrics instance to monitor webhook health:
+HookArmor includes a native, zero-dependency Prometheus exposition endpoint at `GET /metrics`. When `HOOKARMOR_API_KEY` is configured, requests must supply the key via `Authorization: Bearer <key>` or `x-api-key`. Scrape this endpoint into your existing Prometheus or VictoriaMetrics instance to monitor webhook health:
 
 ```text
-# Scraping: http://localhost:4000/metrics
+# Scraping: http://localhost:4000/metrics (Pass Authorization: Bearer <key> if enabled)
 hookarmor_uptime_seconds 8432
 hookarmor_events_total{status="delivered"} 1420
 hookarmor_events_total{status="failed"} 12

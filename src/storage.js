@@ -429,11 +429,53 @@ class Storage {
     return info.changes > 0;
   }
 
+  // Release claims owned by a terminating instance so a successor can process them immediately
+  releaseClaimsOwnedBy(instanceId) {
+    if (!instanceId) return 0;
+    const stmt = this.db.prepare(`
+      UPDATE events
+      SET status = 'pending',
+          claimed_by = NULL,
+          claimed_at = NULL,
+          updated_at = datetime('now')
+      WHERE status = 'replaying' AND claimed_by = ?
+    `);
+    return stmt.run(instanceId).changes;
+  }
+
+  // Deregister an instance on clean shutdown
+  deregisterInstance(instanceId) {
+    if (!instanceId) return 0;
+    return this.db.prepare('DELETE FROM instances WHERE id = ?').run(instanceId).changes;
+  }
+
+  // Fail-fast assertion: verify all configured endpoint secrets can be decrypted
+  assertSecretsReadable(allowUnreadable = false) {
+    const endpoints = this.db.prepare('SELECT id, secret FROM endpoints').all();
+    const unreadable = [];
+    for (const ep of endpoints) {
+      if (!ep.secret) continue;
+      try {
+        decryptSecret(ep.secret, this.encryptionKey);
+      } catch (err) {
+        unreadable.push(ep.id);
+      }
+    }
+    if (unreadable.length > 0 && !allowUnreadable) {
+      throw new Error(
+        `Failed to decrypt signing secrets for endpoint(s): ${unreadable.join(', ')}. ` +
+        `HOOKARMOR_ENCRYPTION_KEY may be missing or invalid. ` +
+        `Set HOOKARMOR_ALLOW_UNREADABLE_SECRETS=true to start anyway.`
+      );
+    }
+    return unreadable.length === 0;
+  }
+
   // Run at startup or worker tick:
   // Reclaim events if:
   // 1. claimed_by is NULL, OR
-  // 2. claimed_by is not active in instances table (last_heartbeat < 45 seconds ago), OR
-  // 3. claimed_at is older than 180 seconds (worker hung)
+  // 2. claimed_by is not active in instances table (last_heartbeat < 45 seconds ago)
+  // NOTE: Claims held by live heartbeating instances are never reclaimed merely due to age (N1 fix).
   recoverInterruptedDeliveries() {
     const sql = `
       UPDATE events
@@ -449,7 +491,6 @@ class Storage {
           OR claimed_by NOT IN (
             SELECT id FROM instances WHERE datetime(last_heartbeat) >= datetime('now', '-45 seconds')
           )
-          OR (claimed_at IS NOT NULL AND datetime(claimed_at) < datetime('now', '-180 seconds'))
         )
     `;
     return this.db.prepare(sql).run().changes;
@@ -481,6 +522,14 @@ class Storage {
 
   listWaitlist() {
     return this.db.prepare('SELECT * FROM waitlist ORDER BY created_at DESC').all();
+  }
+
+  close() {
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch (_) {}
+    }
   }
 }
 

@@ -127,6 +127,9 @@ function createServer(options = {}) {
     console.warn(`[HookArmor] Re-queued ${recovered} event(s) that were mid-delivery when the process last stopped.`);
   }
 
+  // Fail-fast verification: ensure all endpoint secrets can be read with the active encryption key
+  storage.assertSecretsReadable(Boolean(process.env.HOOKARMOR_ALLOW_UNREADABLE_SECRETS === 'true'));
+
   // Security audit check: warn about endpoints without secrets on startup
   try {
     const initialEndpoints = storage.listEndpoints();
@@ -186,7 +189,7 @@ function createServer(options = {}) {
     socket.isAuthed = !apiKey || isDemoMode;
     let authTimer = null;
     if (!socket.isAuthed) {
-      authTimer = setTimeout(() => { if (!socket.isAuthed) socket.close(4001, 'Authentication required'); }, 15000);
+      authTimer = setTimeout(() => { if (!socket.isAuthed) socket.close(4001, 'Authentication required'); }, 5000);
       if (authTimer.unref) authTimer.unref();
     }
     // Browsers cannot set headers on WebSocket upgrades, so the key arrives as the first message
@@ -568,7 +571,7 @@ function createServer(options = {}) {
     const mockAuthMiddleware = (req, res, next) => {
       if (apiKey) {
         const header = req.headers['authorization'] || '';
-        const token = header.startsWith('Bearer ') ? header.slice(7) : (req.headers['x-api-key'] || req.query.key || '');
+        const token = header.startsWith('Bearer ') ? header.slice(7) : (req.headers['x-api-key'] || '');
         if (!tokenMatches(token)) {
           return res.status(401).json({ error: 'Unauthorized: valid API key required for /mock/config' });
         }
@@ -602,8 +605,24 @@ function createServer(options = {}) {
     });
   }
 
-  // Prometheus Metrics Exposition Endpoint
+  // Prometheus Metrics Exposition Endpoint (Requires API key if configured; otherwise loopback only)
   app.get('/metrics', (req, res) => {
+    if (apiKey) {
+      const authHeader = req.headers['authorization'] || '';
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers['x-api-key'] || '';
+      if (!tokenMatches(token)) {
+        res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+        return res.status(401).end('# Unauthorized: valid API key required for /metrics\n');
+      }
+    } else if (!isDemoMode) {
+      const remote = req.socket && req.socket.remoteAddress;
+      const isLoopbackRemote = !remote || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!isLoopbackRemote || !LOCAL_HOSTNAMES.has(hostnameOf(req.headers.host))) {
+        res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+        return res.status(403).end('# Forbidden: loopback only without API key\n');
+      }
+    }
+
     try {
       const stats = storage.getStats();
       const endpoints = storage.listEndpoints();
@@ -640,6 +659,15 @@ function createServer(options = {}) {
     } catch (err) {
       res.status(500).setHeader('Content-Type', 'text/plain').end(`# Error collecting metrics: ${err.message}\n`);
     }
+  });
+
+  // Health and Version Check Endpoint
+  app.get('/healthz', (req, res) => {
+    res.json({
+      status: 'ok',
+      version: require('../package.json').version,
+      uptime: Math.floor(process.uptime())
+    });
   });
 
   // SEO & Web Crawler Discovery

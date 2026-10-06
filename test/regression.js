@@ -728,6 +728,125 @@ test('B7: HTTP response includes security headers and disables X-Powered-By', as
   }
 });
 
+test('N1: active heartbeating instance claims are not reclaimed after 180s', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_n1', name: 'ep_n1', targetUrl: 'http://127.0.0.1:4999/hook' });
+    ha.storage.registerInstance({ id: 'inst_live', hostname: 'host1', pid: 1111 });
+    
+    ha.storage.saveEvent({
+      id: 'evt_n1',
+      endpointId: 'ep_n1',
+      headers: {},
+      rawBody: 'n1',
+      status: 'replaying',
+      claimedBy: 'inst_live'
+    });
+    // Artificially age claimed_at to 200s ago
+    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now', '-200 seconds') WHERE id = 'evt_n1'").run();
+
+    // inst_live heartbeats now
+    ha.storage.heartbeatInstance('inst_live');
+
+    // recoverInterruptedDeliveries must NOT reclaim this event because inst_live is heartbeating
+    const recovered = ha.storage.recoverInterruptedDeliveries();
+    assert.strictEqual(recovered, 0, 'Must not steal claim from an active heartbeating instance');
+    
+    const ev = ha.storage.getEvent('evt_n1');
+    assert.strictEqual(ev.status, 'replaying');
+    assert.strictEqual(ev.claimed_by, 'inst_live');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('N3: /metrics requires API key when configured and rejects unauthorized requests with 401', async () => {
+  const ha = await startHA({ apiKey: 'secret-key-123' });
+  try {
+    const unauthed = await fetch(`${ha.base}/metrics`);
+    assert.strictEqual(unauthed.status, 401, 'Unauthenticated /metrics should return 401');
+
+    const authed = await fetch(`${ha.base}/metrics`, {
+      headers: { Authorization: 'Bearer secret-key-123' }
+    });
+    assert.strictEqual(authed.status, 200, 'Authenticated /metrics should return 200');
+    const body = await authed.text();
+    assert.ok(body.includes('hookarmor_uptime_seconds'));
+  } finally {
+    await ha.close();
+  }
+});
+
+test('N4: assertSecretsReadable fails fast when encryption key cannot decrypt stored secrets', async () => {
+  const Storage = require('../src/storage');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-n4-'));
+  const dbFile = path.join(tempDir, 'n4.db');
+  let s1 = null;
+  let s2 = null;
+  try {
+    s1 = new Storage(dbFile, { encryptionKey: 'key-alpha-32-chars-long-test-pass' });
+    s1.createEndpoint({ id: 'ep_enc', name: 'ep_enc', targetUrl: 'https://example.com', secret: 'whsec_secret_val' });
+    s1.close();
+    s1 = null;
+
+    s2 = new Storage(dbFile, { encryptionKey: 'key-bravo-32-chars-long-test-fail' });
+    assert.throws(() => {
+      s2.assertSecretsReadable(false);
+    }, /Failed to decrypt signing secrets/);
+
+    assert.strictEqual(s2.assertSecretsReadable(true), false);
+  } finally {
+    if (s1) { try { s1.close(); } catch (_) {} }
+    if (s2) { try { s2.close(); } catch (_) {} }
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (_) {}
+  }
+});
+
+test('N5: releaseClaimsOwnedBy and deregisterInstance clean up instance state on shutdown', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_n5', name: 'ep_n5', targetUrl: 'http://127.0.0.1:4999/hook' });
+    ha.storage.registerInstance({ id: 'inst_n5', hostname: 'host_n5', pid: 5555 });
+    ha.storage.saveEvent({
+      id: 'evt_n5',
+      endpointId: 'ep_n5',
+      headers: {},
+      rawBody: 'n5',
+      status: 'replaying',
+      claimedBy: 'inst_n5'
+    });
+
+    const released = ha.storage.releaseClaimsOwnedBy('inst_n5');
+    assert.strictEqual(released, 1);
+    const ev = ha.storage.getEvent('evt_n5');
+    assert.strictEqual(ev.status, 'pending');
+    assert.strictEqual(ev.claimed_by, null);
+
+    const dereg = ha.storage.deregisterInstance('inst_n5');
+    assert.strictEqual(dereg, 1);
+    const remaining = ha.storage.db.prepare('SELECT count(*) as c FROM instances WHERE id = ?').get('inst_n5').c;
+    assert.strictEqual(remaining, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('healthz: /healthz returns status 200, version, and uptime', async () => {
+  const ha = await startHA();
+  try {
+    const res = await fetch(`${ha.base}/healthz`);
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.status, 'ok');
+    assert.ok(data.version);
+    assert.strictEqual(typeof data.uptime, 'number');
+  } finally {
+    await ha.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

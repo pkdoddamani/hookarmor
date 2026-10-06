@@ -22,7 +22,7 @@ function startServerOrExit() {
   }
 }
 
-function setupGracefulShutdown(server, dispatcher, storage) {
+function setupGracefulShutdown(server, dispatcher, storage, instanceId) {
   let shuttingDown = false;
   const shutdown = async (signal) => {
     if (shuttingDown) return;
@@ -30,11 +30,20 @@ function setupGracefulShutdown(server, dispatcher, storage) {
     console.log(chalk.yellow(`\n⏻  ${signal} received: stopping incoming traffic and draining in-flight webhooks...`));
     server.close();
     if (dispatcher && dispatcher.drain) {
-      await dispatcher.drain(15000);
+      const clean = await dispatcher.drain(15000);
+      if (!clean) {
+        console.warn(chalk.yellow(`⚠️  Drain timed out with ${dispatcher.pendingDeliveries()} deliveries still pending.`));
+      }
     }
-    if (storage && storage.db) {
+    if (storage) {
       try {
-        storage.db.pragma('wal_checkpoint(TRUNCATE)');
+        if (instanceId) {
+          storage.releaseClaimsOwnedBy(instanceId);
+          storage.deregisterInstance(instanceId);
+        }
+        if (storage.db) {
+          storage.db.pragma('wal_checkpoint(TRUNCATE)');
+        }
       } catch (_) {}
     }
     console.log(chalk.green('✔  Shutdown complete.'));
@@ -67,8 +76,8 @@ program
   .action((options) => {
     const port = parseInt(options.port, 10);
     const host = options.host;
-    const { server, storage, dispatcher, mockEnabled } = startServerOrExit();
-    setupGracefulShutdown(server, dispatcher, storage);
+    const { server, storage, dispatcher, mockEnabled, instanceId } = startServerOrExit();
+    setupGracefulShutdown(server, dispatcher, storage, instanceId);
 
     // Ensure a default mock endpoint exists for first-time onboarding (local simulation only)
     if (mockEnabled && !storage.getEndpoint('demo-stripe')) {
@@ -110,8 +119,8 @@ program
     if (host === '0.0.0.0') {
       console.warn(chalk.yellow('\n[Security Warning] hookarmor listen is bound to 0.0.0.0 — reachable by anyone on your local network. Use 127.0.0.1 for local isolation.'));
     }
-    const { server, storage, dispatcher } = startServerOrExit();
-    setupGracefulShutdown(server, dispatcher, storage);
+    const { server, storage, dispatcher, instanceId } = startServerOrExit();
+    setupGracefulShutdown(server, dispatcher, storage, instanceId);
 
     storage.createEndpoint({
       id: options.endpoint,
