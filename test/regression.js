@@ -847,6 +847,37 @@ test('healthz: /healthz returns status 200, version, and uptime', async () => {
   }
 });
 
+test('custom_headers: outbound dispatch includes configured destination headers', async () => {
+  const target = await startTarget({ status: 200 });
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_cust_h',
+      name: 'Custom Headers Endpoint',
+      targetUrl: target.url,
+      customHeaders: {
+        'x-internal-secret': 'sec_abc123',
+        'authorization': 'Bearer backend-jwt-token'
+      }
+    });
+
+    const res = await fetch(`${ha.base}/in/ep_cust_h`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hello: 'world' })
+    });
+    assert.strictEqual(res.status, 200);
+
+    const received = await waitFor(() => target.requests.find((r) => r.body.includes('hello')));
+    assert.ok(received, 'Target must receive dispatched request');
+    assert.strictEqual(received.headers['x-internal-secret'], 'sec_abc123');
+    assert.strictEqual(received.headers['authorization'], 'Bearer backend-jwt-token');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

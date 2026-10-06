@@ -325,6 +325,15 @@ class Dispatcher extends EventEmitter {
       headers['x-hookarmor-unverified'] = 'true';
     }
 
+    // Merge custom destination headers configured on the endpoint (e.g. X-Api-Key)
+    if (endpoint.custom_headers && typeof endpoint.custom_headers === 'object') {
+      for (const [k, v] of Object.entries(endpoint.custom_headers)) {
+        if (v !== undefined && v !== null && !STRIPPED_INBOUND_HEADERS.has(k.toLowerCase())) {
+          headers[k.toLowerCase()] = String(v);
+        }
+      }
+    }
+
     return new Promise((resolve) => {
       let settled = false;
 

@@ -210,4 +210,104 @@ program
     }
   });
 
+const endpointsCmd = program
+  .command('endpoints')
+  .description('Manage webhook endpoints via CLI');
+
+endpointsCmd
+  .command('add')
+  .description('Create or update an endpoint')
+  .requiredOption('-i, --id <id>', 'Unique endpoint ID slug')
+  .requiredOption('-t, --target <url>', 'Destination URL')
+  .option('-n, --name <name>', 'Descriptive endpoint name')
+  .option('-s, --secret <secret>', 'Provider signing secret')
+  .option('-a, --alert <url>', 'Alert webhook URL')
+  .option('--headers <json>', 'Custom destination headers JSON string')
+  .option('--max-retries <num>', 'Maximum retry attempts', '5')
+  .option('--concurrency <num>', 'Concurrency limit', '5')
+  .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
+  .option('-k, --api-key <key>', 'Admin API key', process.env.HOOKARMOR_API_KEY)
+  .action(async (options) => {
+    const baseUrl = options.url.replace(/\/$/, '');
+    let customHeaders = {};
+    if (options.headers) {
+      try {
+        customHeaders = JSON.parse(options.headers);
+      } catch (e) {
+        console.error(chalk.red(`--headers must be valid JSON: ${e.message}`));
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const payload = {
+      id: options.id,
+      name: options.name || options.id,
+      targetUrl: options.target,
+      secret: options.secret,
+      alertWebhookUrl: options.alert,
+      maxRetries: parseInt(options.maxRetries, 10),
+      concurrencyLimit: parseInt(options.concurrency, 10),
+      customHeaders
+    };
+    try {
+      const res = await fetch(`${baseUrl}/api/endpoints`, {
+        method: 'POST',
+        headers: apiHeaders(options.apiKey),
+        body: JSON.stringify(payload)
+      });
+      const data = await readJson(res);
+      console.log(chalk.green(`✅ Endpoint '${data.id}' successfully saved -> ${data.target_url}`));
+    } catch (err) {
+      console.error(chalk.red(`Failed to save endpoint: ${err.message}`));
+      process.exitCode = 1;
+    }
+  });
+
+endpointsCmd
+  .command('list')
+  .description('List configured endpoints')
+  .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
+  .option('-k, --api-key <key>', 'Admin API key', process.env.HOOKARMOR_API_KEY)
+  .action(async (options) => {
+    const baseUrl = options.url.replace(/\/$/, '');
+    try {
+      const res = await fetch(`${baseUrl}/api/endpoints`, { headers: apiHeaders(options.apiKey) });
+      const endpoints = await readJson(res);
+      console.log(chalk.blue.bold(`\n🛡️  HookArmor Endpoints (${endpoints.length})`));
+      console.log(chalk.gray('───────────────────────────────────────────────────────'));
+      for (const ep of endpoints) {
+        console.log(`• ${chalk.cyan.bold(ep.id)} (${ep.name})`);
+        console.log(`  Target:  ${chalk.green(ep.target_url)}`);
+        console.log(`  Secret:  ${ep.has_secret ? chalk.yellow('Configured (AES-256-GCM)') : chalk.gray('None')}`);
+        if (ep.custom_headers && Object.keys(ep.custom_headers).length > 0) {
+          console.log(`  Headers: ${chalk.gray(JSON.stringify(ep.custom_headers))}`);
+        }
+        console.log('');
+      }
+    } catch (err) {
+      console.error(chalk.red(`Failed to list endpoints: ${err.message}`));
+      process.exitCode = 1;
+    }
+  });
+
+endpointsCmd
+  .command('rm <id>')
+  .description('Delete an endpoint and its events')
+  .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
+  .option('-k, --api-key <key>', 'Admin API key', process.env.HOOKARMOR_API_KEY)
+  .action(async (id, options) => {
+    const baseUrl = options.url.replace(/\/$/, '');
+    try {
+      const res = await fetch(`${baseUrl}/api/endpoints/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: apiHeaders(options.apiKey)
+      });
+      await readJson(res);
+      console.log(chalk.green(`✅ Endpoint '${id}' and its history deleted.`));
+    } catch (err) {
+      console.error(chalk.red(`Failed to delete endpoint: ${err.message}`));
+      process.exitCode = 1;
+    }
+  });
+
 program.parse();

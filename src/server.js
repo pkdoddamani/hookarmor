@@ -444,7 +444,7 @@ function createServer(options = {}) {
 
   // Create or Update Endpoint
   app.post('/api/endpoints', (req, res) => {
-    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit } = req.body || {};
+    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit, customHeaders, custom_headers } = req.body || {};
     if (!id || !name || !targetUrl) {
       return res.status(400).json({ error: 'id, name, and targetUrl are required' });
     }
@@ -475,7 +475,8 @@ function createServer(options = {}) {
       alertWebhookUrl: alertWebhookUrl === undefined ? undefined : String(alertWebhookUrl || ''),
       autoRetry: autoRetry !== undefined ? autoRetry : 1,
       maxRetries: clampInt(maxRetries, 5, 1, 50),
-      concurrencyLimit: clampInt(concurrencyLimit || concurrency_limit, 5, 1, 100)
+      concurrencyLimit: clampInt(concurrencyLimit || concurrency_limit, 5, 1, 100),
+      customHeaders: customHeaders !== undefined ? customHeaders : custom_headers
     });
     res.json(publicEndpoint(endpoint));
   });

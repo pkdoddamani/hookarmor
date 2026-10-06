@@ -155,6 +155,11 @@ class Storage {
       this.db.exec('ALTER TABLE events ADD COLUMN claimed_at TEXT');
     }
 
+    const epColumns = this.db.prepare('PRAGMA table_info(endpoints)').all().map((c) => c.name);
+    if (!epColumns.includes('custom_headers')) {
+      this.db.exec("ALTER TABLE endpoints ADD COLUMN custom_headers TEXT DEFAULT '{}'");
+    }
+
     try {
       this.db.exec(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem_unique
@@ -164,14 +169,17 @@ class Storage {
   }
 
   // Upsert. Omitting secret or alertWebhookUrl (undefined) keeps the stored value; '' clears it.
-  createEndpoint({ id, name, targetUrl, secret, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5 }) {
+  createEndpoint({ id, name, targetUrl, secret, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders = {} }) {
     const existing = this.getEndpoint(id);
     const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
     const finalAlert = alertWebhookUrl !== undefined ? alertWebhookUrl : (existing ? existing.alert_webhook_url : '');
+    const finalHeaders = customHeaders !== undefined
+      ? (typeof customHeaders === 'string' ? customHeaders : JSON.stringify(customHeaders || {}))
+      : (existing ? JSON.stringify(existing.custom_headers || {}) : '{}');
     const encryptedSecret = encryptSecret(finalSecret, this.encryptionKey);
     this.db.prepare(`
-      INSERT INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit, custom_headers)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         target_url = excluded.target_url,
@@ -179,20 +187,27 @@ class Storage {
         alert_webhook_url = excluded.alert_webhook_url,
         auto_retry = excluded.auto_retry,
         max_retries = excluded.max_retries,
-        concurrency_limit = excluded.concurrency_limit
-    `).run(id, name, targetUrl, encryptedSecret || '', finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5);
+        concurrency_limit = excluded.concurrency_limit,
+        custom_headers = excluded.custom_headers
+    `).run(id, name, targetUrl, encryptedSecret || '', finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5, finalHeaders);
     return this.getEndpoint(id);
   }
 
   getEndpoint(id) {
     const row = this.db.prepare('SELECT * FROM endpoints WHERE id = ?').get(id);
     if (!row) return null;
-    return { ...row, secret: decryptSecret(row.secret, this.encryptionKey) };
+    let customHeaders = {};
+    try { customHeaders = JSON.parse(row.custom_headers || '{}'); } catch (_) {}
+    return { ...row, secret: decryptSecret(row.secret, this.encryptionKey), custom_headers: customHeaders };
   }
 
   listEndpoints() {
     const rows = this.db.prepare('SELECT * FROM endpoints ORDER BY created_at DESC').all();
-    return rows.map((r) => ({ ...r, secret: decryptSecret(r.secret, this.encryptionKey) }));
+    return rows.map((r) => {
+      let customHeaders = {};
+      try { customHeaders = JSON.parse(r.custom_headers || '{}'); } catch (_) {}
+      return { ...r, secret: decryptSecret(r.secret, this.encryptionKey), custom_headers: customHeaders };
+    });
   }
 
   deleteEndpoint(id) {
