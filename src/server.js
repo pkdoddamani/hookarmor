@@ -90,14 +90,52 @@ function createServer(options = {}) {
   const app = express();
   const server = http.createServer(app);
 
+  app.disable('x-powered-by');
+
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';"
+    );
+    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    if (isHttps) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    next();
+  });
+
   const trustProxy = process.env.HOOKARMOR_TRUST_PROXY || ((process.env.RAILWAY_ENVIRONMENT || process.env.RENDER) ? '1' : null);
   if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10) : trustProxy);
 
-  const storage = new Storage(options.dbPath);
-  const recovered = storage.recoverInterruptedDeliveries();
+  const storage = new Storage(options.dbPath, {
+    encryptionKey: options.encryptionKey || process.env.HOOKARMOR_ENCRYPTION_KEY
+  });
+
+  const instanceId = options.instanceId || `inst_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  storage.registerInstance({
+    id: instanceId,
+    hostname: require('os').hostname(),
+    pid: process.pid
+  });
+
+  const recovered = storage.recoverInterruptedDeliveries(instanceId);
   if (recovered > 0) {
     console.warn(`[HookArmor] Re-queued ${recovered} event(s) that were mid-delivery when the process last stopped.`);
   }
+
+  // Security audit check: warn about endpoints without secrets on startup
+  try {
+    const initialEndpoints = storage.listEndpoints();
+    for (const ep of initialEndpoints) {
+      if (!ep.secret) {
+        console.warn(`[Security Warning] Endpoint '${ep.id}' has no signing secret. Incoming webhooks cannot be cryptographically verified against spoofing!`);
+      }
+    }
+  } catch (_) {}
 
   const dispatcher = new Dispatcher(storage, {
     defaultConcurrency: options.defaultConcurrency || 5,
@@ -108,7 +146,8 @@ function createServer(options = {}) {
 
   const worker = new RetryWorker(storage, dispatcher, {
     intervalMs: options.retryIntervalMs || 5000,
-    retentionDays
+    retentionDays,
+    instanceId
   });
   if (options.autoStartWorker !== false) {
     worker.start();
@@ -271,6 +310,9 @@ function createServer(options = {}) {
         });
       }
       verified = true;
+    } else {
+      console.warn(`[Ingress Warning] Ingested webhook for endpoint '${endpoint.id}' without signature verification (no secret configured).`);
+      headers['x-hookarmor-unverified'] = 'true';
     }
 
     let savedEvent;
@@ -300,6 +342,7 @@ function createServer(options = {}) {
         headers,
         rawBody: rawBodyBuffer,
         status: 'replaying',
+        claimedBy: instanceId,
         verified
       });
     } catch (err) {
@@ -522,13 +565,29 @@ function createServer(options = {}) {
       responseBody: { status: 'mock_processed' }
     };
 
+    const mockAuthMiddleware = (req, res, next) => {
+      if (apiKey) {
+        const header = req.headers['authorization'] || '';
+        const token = header.startsWith('Bearer ') ? header.slice(7) : (req.headers['x-api-key'] || req.query.key || '');
+        if (!tokenMatches(token)) {
+          return res.status(401).json({ error: 'Unauthorized: valid API key required for /mock/config' });
+        }
+      } else {
+        const host = hostnameOf(req.headers['host']);
+        if (!LOCAL_HOSTNAMES.has(host) && !allowNoAuth) {
+          return res.status(403).json({ error: 'Forbidden: loopback access only' });
+        }
+      }
+      next();
+    };
+
     app.post('/mock/target', (req, res) => {
       setTimeout(() => {
         res.status(mockTargetBehavior.statusCode).json(mockTargetBehavior.responseBody);
       }, mockTargetBehavior.delayMs);
     });
 
-    app.post('/mock/config', (req, res) => {
+    app.post('/mock/config', mockAuthMiddleware, (req, res) => {
       const body = req.body || {};
       mockTargetBehavior = {
         statusCode: clampInt(body.statusCode, mockTargetBehavior.statusCode, 100, 599),
@@ -538,10 +597,50 @@ function createServer(options = {}) {
       res.json({ message: 'Mock target configuration updated', config: mockTargetBehavior });
     });
 
-    app.get('/mock/config', (req, res) => {
+    app.get('/mock/config', mockAuthMiddleware, (req, res) => {
       res.json(mockTargetBehavior);
     });
   }
+
+  // Prometheus Metrics Exposition Endpoint
+  app.get('/metrics', (req, res) => {
+    try {
+      const stats = storage.getStats();
+      const endpoints = storage.listEndpoints();
+      const unverifiedCount = endpoints.filter((e) => !e.secret).length;
+      const uptime = Math.floor(process.uptime());
+
+      const lines = [
+        '# HELP hookarmor_uptime_seconds Total process uptime in seconds',
+        '# TYPE hookarmor_uptime_seconds counter',
+        `hookarmor_uptime_seconds ${uptime}`,
+        '',
+        '# HELP hookarmor_events_total Total number of events by status',
+        '# TYPE hookarmor_events_total gauge',
+        `hookarmor_events_total{status="delivered"} ${stats.delivered || 0}`,
+        `hookarmor_events_total{status="failed"} ${stats.failed || 0}`,
+        `hookarmor_events_total{status="pending"} ${stats.pending || 0}`,
+        `hookarmor_events_total{status="total"} ${stats.total || 0}`,
+        '',
+        '# HELP hookarmor_endpoints_total Total number of configured endpoints',
+        '# TYPE hookarmor_endpoints_total gauge',
+        `hookarmor_endpoints_total ${endpoints.length}`,
+        '',
+        '# HELP hookarmor_endpoints_unverified_total Number of endpoints without a cryptographic signing secret',
+        '# TYPE hookarmor_endpoints_unverified_total gauge',
+        `hookarmor_endpoints_unverified_total ${unverifiedCount}`,
+        '',
+        '# HELP hookarmor_delivery_latency_ms_avg Average delivery latency in milliseconds',
+        '# TYPE hookarmor_delivery_latency_ms_avg gauge',
+        `hookarmor_delivery_latency_ms_avg ${stats.avgLatencyMs || 0}`
+      ];
+
+      res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+      res.end(lines.join('\n') + '\n');
+    } catch (err) {
+      res.status(500).setHeader('Content-Type', 'text/plain').end(`# Error collecting metrics: ${err.message}\n`);
+    }
+  });
 
   // SEO & Web Crawler Discovery
   app.get('/robots.txt', (req, res) => {
@@ -587,7 +686,7 @@ function createServer(options = {}) {
     res.redirect('/blog');
   });
 
-  return { app, server, storage, dispatcher, worker, mockEnabled, strictSSRF };
+  return { app, server, storage, dispatcher, worker, mockEnabled, strictSSRF, instanceId };
 }
 
 module.exports = { createServer };

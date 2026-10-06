@@ -445,7 +445,7 @@ test('DELETE /api/endpoints/:id and /api/events/:id remove rows and delivery att
     // Delete endpoint
     const resEp = await fetch(`${ha.base}/api/endpoints/ep_del`, { method: 'DELETE' });
     assert.strictEqual(resEp.status, 200);
-    assert.strictEqual(ha.storage.getEndpoint('ep_del'), undefined);
+    assert.strictEqual(ha.storage.getEndpoint('ep_del'), null);
   } finally { await ha.close(); }
 });
 
@@ -508,6 +508,222 @@ test('ingress rate limiting throttles requests per client IP when limit is reach
     assert.deepStrictEqual(statuses, [200, 200, 200, 429]);
   } finally {
     process.env.HOOKARMOR_INGRESS_RATE_LIMIT = orig || '';
+    await ha.close();
+  }
+});
+
+test('endpoint secrets are encrypted with AES-256-GCM at rest when HOOKARMOR_ENCRYPTION_KEY is set', async () => {
+  const encKey = 'test_master_encryption_key_abcdef123456';
+  const ha = await startHA({ encryptionKey: encKey });
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_enc',
+      name: 'Encrypted Endpoint',
+      targetUrl: 'https://example.com/enc',
+      secret: 'whsec_very_secret_signing_token_999'
+    });
+
+    // 1. Raw database row must store authenticated ciphertext, not plaintext
+    const rawRow = ha.storage.db.prepare("SELECT secret FROM endpoints WHERE id = 'ep_enc'").get();
+    assert.ok(rawRow.secret.startsWith('enc:v1:'), 'Stored secret must be prefixed with enc:v1:');
+    assert.strictEqual(rawRow.secret.includes('whsec_very_secret'), false, 'Plaintext secret must not appear in SQLite database');
+
+    // 2. getEndpoint transparently decrypts using the key
+    const ep = ha.storage.getEndpoint('ep_enc');
+    assert.strictEqual(ep.secret, 'whsec_very_secret_signing_token_999');
+
+    // 3. Tampering with ciphertext fails authentication
+    const tampered = rawRow.secret.slice(0, -4) + '0000';
+    ha.storage.db.prepare("UPDATE endpoints SET secret = ? WHERE id = 'ep_enc'").run(tampered);
+    assert.throws(() => ha.storage.getEndpoint('ep_enc'), /Unsupported state or unable to authenticate data|authentication failed/i);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('Prometheus /metrics endpoint returns standard exposition format', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_m1', name: 'ep_m1', targetUrl: 'https://example.com/1', secret: 'whsec_1' });
+    ha.storage.createEndpoint({ id: 'ep_m2', name: 'ep_m2', targetUrl: 'https://example.com/2' }); // unverified
+    const res = await fetch(`${ha.base}/metrics`);
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.headers.get('content-type').includes('text/plain'));
+    const body = await res.text();
+    assert.ok(body.includes('hookarmor_uptime_seconds'));
+    assert.ok(body.includes('hookarmor_events_total{status="delivered"}'));
+    assert.ok(body.includes('hookarmor_endpoints_total 2'));
+    assert.ok(body.includes('hookarmor_endpoints_unverified_total 1'));
+  } finally {
+    await ha.close();
+  }
+});
+
+test('ingress on endpoints without secrets records x-hookarmor-unverified diagnostic header', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_no_sec', name: 'No Secret', targetUrl: target.url });
+    const res = await fetch(`${ha.base}/in/ep_no_sec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hello: 'world' })
+    });
+    assert.strictEqual(res.status, 200);
+    const { hookarmor_id } = await res.json();
+    const ev = await waitFor(() => ha.storage.getEvent(hookarmor_id));
+    assert.strictEqual(ev.verified, 0);
+    await waitFor(() => target.requests.length === 1);
+    assert.strictEqual(target.requests[0].headers['x-hookarmor-unverified'], 'true');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('B1: multi-instance lease claims prevent active peer delivery theft while recovering dead instances', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_multi', name: 'Multi', targetUrl: 'https://example.com' });
+    ha.storage.saveEvent({ id: 'evt_peer_active', endpointId: 'ep_multi', headers: {}, rawBody: 'ping' });
+    ha.storage.saveEvent({ id: 'evt_dead_worker', endpointId: 'ep_multi', headers: {}, rawBody: 'ping2' });
+
+    // Register active peer instance and dead peer instance
+    ha.storage.registerInstance({ id: 'inst_active', hostname: 'host1', pid: 1001 });
+    ha.storage.registerInstance({ id: 'inst_dead', hostname: 'host2', pid: 1002 });
+    // Backdate dead instance heartbeat to 60 seconds ago
+    ha.storage.db.prepare("UPDATE instances SET last_heartbeat = datetime('now', '-60 seconds') WHERE id = 'inst_dead'").run();
+
+    // Claim one event by active peer, and one by dead peer
+    ha.storage.claimEventForRetry('evt_peer_active', 'inst_active');
+    ha.storage.claimEventForRetry('evt_dead_worker', 'inst_dead');
+
+    // Instance 3 starts up and runs recovery
+    const recovered = ha.storage.recoverInterruptedDeliveries('inst_3');
+    assert.strictEqual(recovered, 1, 'Must recover exactly 1 dead worker event, leaving active peer claim untouched');
+
+    const evActive = ha.storage.getEvent('evt_peer_active');
+    assert.strictEqual(evActive.status, 'replaying', 'Active peer delivery must remain in-flight');
+
+    const evDead = ha.storage.getEvent('evt_dead_worker');
+    assert.strictEqual(evDead.status, 'failed', 'Dead worker delivery must be re-queued to failed');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('B2: cascading endpoint deletion succeeds even when endpoint has events and attempts history', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_cascade', name: 'Cascade Test', targetUrl: 'https://example.com' });
+    ha.storage.saveEvent({ id: 'evt_hist_1', endpointId: 'ep_cascade', headers: {}, rawBody: 'test1' });
+    ha.storage.recordAttempt({ eventId: 'evt_hist_1', statusCode: 500, errorMessage: 'Failed' });
+
+    // Deleting endpoint directly must cascade and not throw SQLite FK error
+    const deleted = ha.storage.deleteEndpoint('ep_cascade');
+    assert.strictEqual(deleted, true);
+
+    assert.strictEqual(ha.storage.getEndpoint('ep_cascade'), null);
+    assert.strictEqual(ha.storage.getEvent('evt_hist_1'), null);
+    assert.strictEqual(ha.storage.getAttempts('evt_hist_1').length, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('B3: outbound dispatch strips spoofable routing and trust headers', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_strip', name: 'Header Strip', targetUrl: target.url });
+    await fetch(`${ha.base}/in/ep_strip`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': '10.0.0.99',
+        'X-Real-IP': '10.0.0.99',
+        'X-Original-URL': '/admin/delete',
+        'CF-Connecting-IP': '10.0.0.99',
+        'X-Custom-Header': 'keep-me'
+      },
+      body: JSON.stringify({ ok: true })
+    });
+
+    await waitFor(() => target.requests.length === 1);
+    const receivedHeaders = target.requests[0].headers;
+    assert.strictEqual(receivedHeaders['x-custom-header'], 'keep-me');
+    assert.strictEqual(receivedHeaders['x-forwarded-for'], undefined);
+    assert.strictEqual(receivedHeaders['x-real-ip'], undefined);
+    assert.strictEqual(receivedHeaders['x-original-url'], undefined);
+    assert.strictEqual(receivedHeaders['cf-connecting-ip'], undefined);
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('B4: /mock/config route requires authentication when API key is configured', async () => {
+  const apiKey = 'test_mock_secret_key_777';
+  const ha = await startHA({ apiKey, enableMock: true });
+  try {
+    // Unauthenticated write must fail with 401
+    const resNoAuth = await fetch(`${ha.base}/mock/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statusCode: 503 })
+    });
+    assert.strictEqual(resNoAuth.status, 401);
+
+    // Authenticated write must succeed with 200
+    const resAuth = await fetch(`${ha.base}/mock/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({ statusCode: 503 })
+    });
+    assert.strictEqual(resAuth.status, 200);
+    const data = await resAuth.json();
+    assert.strictEqual(data.config.statusCode, 503);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('B5: unique index on events(endpoint_id, idempotency_key) enforces cross-instance dedup', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_idem_idx', name: 'Idem Index', targetUrl: 'https://example.com' });
+    const ev1 = ha.storage.saveEvent({
+      id: 'evt_idem_1',
+      endpointId: 'ep_idem_idx',
+      idempotencyKey: 'dup_key_999',
+      headers: {},
+      rawBody: 'one'
+    });
+    assert.strictEqual(ev1.id, 'evt_idem_1');
+
+    // Second insert with exact same idempotency key must not throw or insert a duplicate
+    const ev2 = ha.storage.saveEvent({
+      id: 'evt_idem_2',
+      endpointId: 'ep_idem_idx',
+      idempotencyKey: 'dup_key_999',
+      headers: {},
+      rawBody: 'two'
+    });
+    assert.strictEqual(ev2.id, 'evt_idem_1', 'Must return existing event on collision');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('B7: HTTP response includes security headers and disables X-Powered-By', async () => {
+  const ha = await startHA();
+  try {
+    const res = await fetch(`${ha.base}/dashboard`);
+    assert.strictEqual(res.headers.get('x-frame-options'), 'DENY');
+    assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.ok(res.headers.get('content-security-policy'));
+    assert.strictEqual(res.headers.get('x-powered-by'), null);
+  } finally {
     await ha.close();
   }
 });

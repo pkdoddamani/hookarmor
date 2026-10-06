@@ -1,10 +1,10 @@
 # 🛡️ HookArmor
 
-> **Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
+> **Durable at-least-once Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-38%20Passing-brightgreen.svg)]()
-[![Status: Production Ready](https://img.shields.io/badge/Status-v1.1.1-blueviolet.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-47%20Passing-brightgreen.svg)]()
+[![Status: Production Ready](https://img.shields.io/badge/Status-v1.2.0-blueviolet.svg)]()
 
 ---
 
@@ -26,8 +26,8 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
             ▼
 ┌───────────────────────────────────────┐
 │        HookArmor Ingress Edge         │
-│  - Returns immediate 200 OK (<10ms)   │
-│  - Stores raw payload in SQLite DLQ   │
+│  - Returns immediate 200 OK           │
+│  - Stores raw payload in SQLite WAL   │
 └───────────────────┬───────────────────┘
                     │
                     ▼
@@ -48,7 +48,7 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
                         └─────────────────────────────────────┘
 ```
 
-1. **Sub-10ms Ingest**: HookArmor returns an immediate `200 OK` to the sender so Stripe or Shopify never marks the event failed.
+1. **Immediate Durable Ingest**: HookArmor returns a `200 OK` once committed to durable SQLite storage so Stripe or Shopify never abandons the webhook.
 2. **Cryptographic Header & Signature Preservation**: Forwards exact raw bytes, `stripe-signature`, `x-shopify-hmac-sha256`, and timestamps.
 3. **Dead-Letter Queue (DLQ)**: If your server returns 500, 502, 504, 429, or times out, HookArmor safely preserves the raw event with full error diagnostics.
 4. **Instant Alerts**: Sends immediate Slack / Discord webhooks when an endpoint begins failing.
@@ -105,7 +105,7 @@ npx hookarmor replay evt_1758513516086_m8r0e7
 
 ## 📊 Verification Test Suite
 
-HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 26-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication and dashboard escaping:
+HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 39-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping:
 ```bash
 npm test
 ```
@@ -222,23 +222,46 @@ HookArmor returns an immediate `200 OK` to Stripe and Shopify in `<10ms` to prot
 
 ---
 
-## 📦 Hosted Cloud & Self-Hosting
+## 🏗️ Architecture & Operational Scope
 
-HookArmor is 100% free and open-source under the MIT license. Managed cloud tiers are currently in private waitlist preview.
+HookArmor is 100% free and open-source under the MIT license, architected specifically as a **single-node, low-footprint buffer and sidecar** for monolithic and containerized applications.
 
-| Feature | Self-Hosted OSS (MIT) | Hosted Cloud Starter (Waitlist) | Hosted Cloud Pro (Waitlist) |
-|---|---|---|---|
-| **Ingress Proxy & Buffer** | Unlimited | 50,000 events/mo | 500,000 events/mo |
-| **Instant 200 OK Ack** | Yes (<10ms) | Yes (<10ms) | Yes (<10ms) |
-| **Dead-Letter Queue (DLQ)** | Yes | Yes | Yes |
-| **Stripe Signature Re-Signing** | Yes | Yes | Yes |
-| **Background Auto-Retries** | Yes | Yes | Yes |
-| **Concurrency Pool Limiter** | Yes | Yes | Yes |
-| **Event Retention** | Local Disk (Configurable) | 30 days | 90 days |
-| **Alerting** | Discord / Slack Webhooks | Discord / Slack Webhooks | Priority Webhooks |
-| **Infrastructure** | Single-node Docker / VPS | Fully managed & redundant | Fully managed & redundant |
+* **Single-Process Simplicity**: Operates entirely in a single Node.js process using embedded SQLite with Write-Ahead Logging (`WAL`) and `synchronous=FULL`. It consumes <50MB RAM and eliminates the operational overhead of running external message brokers (Kafka, RabbitMQ, SQS, or Redis).
+* **Scope & Boundaries**: HookArmor is intended to run on the same VPS, container host, or private network cluster as your downstream web application. It is **not** a distributed multi-region cluster broker.
+* **Persistent Disk Required**: Because events are durably acknowledged to providers in `<5ms`, your container volume (`/app/data`) must be backed by a persistent disk or volume mount.
 
 ---
+
+## 📊 Prometheus & Grafana Metrics
+
+HookArmor includes a native, zero-dependency Prometheus exposition endpoint at `GET /metrics`. Scrape this endpoint into your existing Prometheus or VictoriaMetrics instance to monitor webhook health:
+
+```text
+# Scraping: http://localhost:4000/metrics
+hookarmor_uptime_seconds 8432
+hookarmor_events_total{status="delivered"} 1420
+hookarmor_events_total{status="failed"} 12
+hookarmor_events_total{status="pending"} 0
+hookarmor_endpoints_total 4
+hookarmor_endpoints_unverified_total 1
+hookarmor_delivery_latency_ms_avg 34.2
+```
+
+---
+
+## 🔒 Secret Encryption at Rest (AES-256-GCM)
+
+By default, endpoint signing secrets are stored in SQLite. For hardened environments, set `HOOKARMOR_ENCRYPTION_KEY` to enable transparent **AES-256-GCM authenticated envelope encryption** at rest:
+
+```bash
+# Generate a 256-bit encryption key
+openssl rand -hex 32
+
+# Set in your environment:
+export HOOKARMOR_ENCRYPTION_KEY=your_64_char_hex_key
+```
+
+When enabled, all provider webhook secrets are encrypted with a unique 96-bit random IV and 128-bit authentication tag before being written to disk (`enc:v1:iv:tag:ciphertext`), preventing secret extraction even if database files or backups are compromised.
 
 ## 🔐 Production Security & Admin Authentication
 
@@ -275,6 +298,7 @@ When `HOOKARMOR_API_KEY` is present:
 | Variable | Default | Purpose |
 |---|---|---|
 | `HOOKARMOR_API_KEY` | none (required in production) | Admin key for the management API, dashboard and CLI |
+| `HOOKARMOR_ENCRYPTION_KEY` | none | 256-bit key enabling AES-256-GCM at-rest encryption for endpoint secrets |
 | `HOOKARMOR_STRICT_SSRF` | `true` in production, `false` locally | Block loopback, private-network and link-local delivery targets (checked on the resolved IP at delivery time). Cloud metadata addresses are always blocked |
 | `HOOKARMOR_SIGNING_SECRET` | none | Enables Mode B internal signatures |
 | `HOOKARMOR_DATA_DIR` | `./data` (current directory) | Where `hookarmor.db` is stored |

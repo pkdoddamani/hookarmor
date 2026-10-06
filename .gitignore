@@ -16,3 +16,5 @@ admin_key.txt
 *key*.txt
 *token*
 npm_token.txt
+distribution/
+distribution

@@ -1,14 +1,52 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 // SQLite datetime() format (UTC, "YYYY-MM-DD HH:MM:SS") so stored times compare correctly with datetime('now')
 function toSqliteTime(date) {
   return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+function deriveKey(keyInput) {
+  if (!keyInput) return null;
+  if (Buffer.isBuffer(keyInput) && keyInput.length === 32) return keyInput;
+  return crypto.createHash('sha256').update(String(keyInput)).digest();
+}
+
+function encryptSecret(plaintext, key) {
+  if (!plaintext || typeof plaintext !== 'string') return plaintext || '';
+  if (!key) return plaintext;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptSecret(stored, key) {
+  if (!stored || typeof stored !== 'string') return stored || '';
+  if (!stored.startsWith('enc:v1:')) {
+    return stored; // Plaintext legacy or fallback
+  }
+  if (!key) {
+    throw new Error('Endpoint secret is encrypted with AES-256-GCM, but HOOKARMOR_ENCRYPTION_KEY is not configured');
+  }
+  const parts = stored.split(':');
+  if (parts.length !== 5) {
+    throw new Error('Malformed encrypted secret format in database');
+  }
+  const iv = Buffer.from(parts[2], 'hex');
+  const tag = Buffer.from(parts[3], 'hex');
+  const ciphertext = Buffer.from(parts[4], 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return decrypted.toString('utf8');
+}
+
 class Storage {
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     if (!dbPath) {
       const dataDir = process.env.HOOKARMOR_DATA_DIR || path.join(process.cwd(), 'data');
       if (!fs.existsSync(dataDir)) {
@@ -16,6 +54,16 @@ class Storage {
       }
       dbPath = path.join(dataDir, 'hookarmor.db');
     }
+    const envKey = process.env.HOOKARMOR_ENCRYPTION_KEY;
+    this.encryptionKey = options.encryptionKey !== undefined
+      ? deriveKey(options.encryptionKey)
+      : deriveKey(envKey);
+
+    if (!this.encryptionKey && !Storage._warnedNoKey && process.env.NODE_ENV !== 'test') {
+      console.warn('[Security Warning] HOOKARMOR_ENCRYPTION_KEY is not set. Endpoint secrets are stored in plaintext. Set a 32+ character key to enable AES-256-GCM at-rest encryption.');
+      Storage._warnedNoKey = true;
+    }
+
     this.db = new Database(dbPath);
     this.init();
   }
@@ -54,6 +102,8 @@ class Storage {
         last_error TEXT,
         last_latency_ms INTEGER,
         next_retry_at TEXT,
+        claimed_by TEXT,
+        claimed_at TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now')),
         FOREIGN KEY (endpoint_id) REFERENCES endpoints(id)
@@ -68,6 +118,14 @@ class Storage {
         latency_ms INTEGER,
         attempted_at TEXT DEFAULT (datetime('now')),
         FOREIGN KEY (event_id) REFERENCES events(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS instances (
+        id TEXT PRIMARY KEY,
+        hostname TEXT,
+        pid INTEGER,
+        started_at TEXT DEFAULT (datetime('now')),
+        last_heartbeat TEXT DEFAULT (datetime('now'))
       );
 
       CREATE TABLE IF NOT EXISTS waitlist (
@@ -85,11 +143,24 @@ class Storage {
       CREATE INDEX IF NOT EXISTS idx_attempts_event ON delivery_attempts(event_id);
     `);
 
-    // Migration: whether the event's signature was verified at ingress
+    // Migrations for existing databases
     const eventColumns = this.db.prepare('PRAGMA table_info(events)').all().map((c) => c.name);
     if (!eventColumns.includes('verified')) {
       this.db.exec('ALTER TABLE events ADD COLUMN verified INTEGER DEFAULT 0');
     }
+    if (!eventColumns.includes('claimed_by')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN claimed_by TEXT');
+    }
+    if (!eventColumns.includes('claimed_at')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN claimed_at TEXT');
+    }
+
+    try {
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem_unique
+          ON events(endpoint_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+      `);
+    } catch (_) {}
   }
 
   // Upsert. Omitting secret or alertWebhookUrl (undefined) keeps the stored value; '' clears it.
@@ -97,6 +168,7 @@ class Storage {
     const existing = this.getEndpoint(id);
     const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
     const finalAlert = alertWebhookUrl !== undefined ? alertWebhookUrl : (existing ? existing.alert_webhook_url : '');
+    const encryptedSecret = encryptSecret(finalSecret, this.encryptionKey);
     this.db.prepare(`
       INSERT INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -108,21 +180,32 @@ class Storage {
         auto_retry = excluded.auto_retry,
         max_retries = excluded.max_retries,
         concurrency_limit = excluded.concurrency_limit
-    `).run(id, name, targetUrl, finalSecret || '', finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5);
+    `).run(id, name, targetUrl, encryptedSecret || '', finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5);
     return this.getEndpoint(id);
   }
 
   getEndpoint(id) {
-    return this.db.prepare('SELECT * FROM endpoints WHERE id = ?').get(id);
+    const row = this.db.prepare('SELECT * FROM endpoints WHERE id = ?').get(id);
+    if (!row) return null;
+    return { ...row, secret: decryptSecret(row.secret, this.encryptionKey) };
   }
 
   listEndpoints() {
-    return this.db.prepare('SELECT * FROM endpoints ORDER BY created_at DESC').all();
+    const rows = this.db.prepare('SELECT * FROM endpoints ORDER BY created_at DESC').all();
+    return rows.map((r) => ({ ...r, secret: decryptSecret(r.secret, this.encryptionKey) }));
   }
 
   deleteEndpoint(id) {
-    const info = this.db.prepare('DELETE FROM endpoints WHERE id = ?').run(id);
-    return info.changes > 0;
+    const deleteTx = this.db.transaction((epId) => {
+      this.db.prepare(`
+        DELETE FROM delivery_attempts WHERE event_id IN (
+          SELECT id FROM events WHERE endpoint_id = ?
+        )
+      `).run(epId);
+      this.db.prepare('DELETE FROM events WHERE endpoint_id = ?').run(epId);
+      return this.db.prepare('DELETE FROM endpoints WHERE id = ?').run(epId).changes > 0;
+    });
+    return deleteTx(id);
   }
 
   // Any stored copy counts: once HookArmor has custody, a provider re-send is redundant
@@ -133,24 +216,33 @@ class Storage {
     return { ...row, headers: JSON.parse(row.headers) };
   }
 
-  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', verified = false }) {
+  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', claimedBy = null, verified = false }) {
     const rawBuffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
     const stmt = this.db.prepare(`
-      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, verified, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'), datetime('now'))
+      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, claimed_by, claimed_at, verified, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ${claimedBy ? "datetime('now')" : 'NULL'}, ?, datetime('now'), datetime('now'))
     `);
-    stmt.run(
-      id,
-      endpointId,
-      idempotencyKey,
-      provider,
-      eventType,
-      JSON.stringify(headers),
-      rawBuffer,
-      status,
-      verified ? 1 : 0
-    );
-    return this.getEvent(id);
+    try {
+      stmt.run(
+        id,
+        endpointId,
+        idempotencyKey,
+        provider,
+        eventType,
+        JSON.stringify(headers),
+        rawBuffer,
+        status,
+        claimedBy,
+        verified ? 1 : 0
+      );
+      return this.getEvent(id);
+    } catch (err) {
+      if (idempotencyKey && (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || (err.message && err.message.includes('UNIQUE constraint failed')))) {
+        const existing = this.findEventByIdempotencyKey(endpointId, idempotencyKey);
+        if (existing) return existing;
+      }
+      throw err;
+    }
   }
 
   getPendingCount() {
@@ -290,35 +382,77 @@ class Storage {
     }));
   }
 
-  claimEventForRetry(eventId) {
+  registerInstance({ id, hostname, pid }) {
+    if (!id) return;
+    this.db.prepare(`
+      INSERT INTO instances (id, hostname, pid, started_at, last_heartbeat)
+      VALUES (?, ?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET last_heartbeat = datetime('now'), pid = excluded.pid, hostname = excluded.hostname
+    `).run(id, hostname || null, pid || null);
+  }
+
+  heartbeatInstance(id) {
+    if (!id) return;
+    this.db.prepare(`
+      UPDATE instances SET last_heartbeat = datetime('now') WHERE id = ?
+    `).run(id);
+  }
+
+  reapStaleInstances(timeoutSeconds = 300) {
+    return this.db.prepare(`
+      DELETE FROM instances WHERE datetime(last_heartbeat) < datetime('now', '-' || ? || ' seconds')
+    `).run(timeoutSeconds).changes;
+  }
+
+  claimEventForRetry(eventId, instanceId = null) {
     const info = this.db.prepare(`
       UPDATE events
-      SET status = 'replaying', updated_at = datetime('now')
+      SET status = 'replaying',
+          claimed_by = ?,
+          claimed_at = datetime('now'),
+          updated_at = datetime('now')
       WHERE id = ? AND status IN ('failed', 'pending')
-    `).run(eventId);
+    `).run(instanceId, eventId);
     return info.changes > 0;
   }
 
   // Manual replay may re-send delivered events, but never one that is already in flight
-  claimEventForManualReplay(eventId) {
+  claimEventForManualReplay(eventId, instanceId = null) {
     const info = this.db.prepare(`
       UPDATE events
-      SET status = 'replaying', updated_at = datetime('now')
+      SET status = 'replaying',
+          claimed_by = ?,
+          claimed_at = datetime('now'),
+          updated_at = datetime('now')
       WHERE id = ? AND status IN ('failed', 'pending', 'delivered')
-    `).run(eventId);
+    `).run(instanceId, eventId);
     return info.changes > 0;
   }
 
-  // Run once at startup: anything still 'replaying' was in flight when the process died
+  // Run at startup or worker tick:
+  // Reclaim events if:
+  // 1. claimed_by is NULL, OR
+  // 2. claimed_by is not active in instances table (last_heartbeat < 45 seconds ago), OR
+  // 3. claimed_at is older than 180 seconds (worker hung)
   recoverInterruptedDeliveries() {
-    return this.db.prepare(`
+    const sql = `
       UPDATE events
       SET status = 'failed',
           next_retry_at = datetime('now'),
           last_error = COALESCE(last_error, 'Delivery interrupted by restart'),
+          claimed_by = NULL,
+          claimed_at = NULL,
           updated_at = datetime('now')
       WHERE status = 'replaying'
-    `).run().changes;
+        AND (
+          claimed_by IS NULL
+          OR claimed_by NOT IN (
+            SELECT id FROM instances WHERE datetime(last_heartbeat) >= datetime('now', '-45 seconds')
+          )
+          OR (claimed_at IS NOT NULL AND datetime(claimed_at) < datetime('now', '-180 seconds'))
+        )
+    `;
+    return this.db.prepare(sql).run().changes;
   }
 
   // Delete delivered events (and their attempt logs) older than `days`. Failed events are kept.
@@ -351,5 +485,8 @@ class Storage {
 }
 
 Storage.toSqliteTime = toSqliteTime;
+Storage.deriveKey = deriveKey;
+Storage.encryptSecret = encryptSecret;
+Storage.decryptSecret = decryptSecret;
 
 module.exports = Storage;

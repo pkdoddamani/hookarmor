@@ -900,13 +900,16 @@
 
         container.innerHTML = cachedEndpoints.map(ep => `
           <div class="endpoint-item">
-            <div class="endpoint-name">${esc(ep.name)}</div>
+            <div class="endpoint-name" style="display: flex; align-items: center; justify-content: space-between;">
+              <span>${esc(ep.name)}</span>
+              ${!ep.has_secret ? '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.68rem; padding: 0.1rem 0.4rem;">⚠️ No Secret</span>' : ''}
+            </div>
             <div class="endpoint-url" title="Ingress URL">${esc(window.location.origin)}/in/${esc(ep.id)}</div>
             <div class="target-url">🎯 <strong>Target:</strong> ${esc(ep.target_url)}</div>
             <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.75rem;">
               <span>Auto-Retry: <strong>${ep.auto_retry ? 'Yes' : 'No'}</strong></span>
               <span>Max: <strong>${esc(ep.max_retries)} attempts</strong></span>
-              <span>Signed: <strong>${ep.has_secret ? 'Yes' : 'No'}</strong></span>
+              <span>Signed: <strong>${ep.has_secret ? 'Yes' : '<span style="color: #f59e0b;">No (⚠️ Unverified)</span>'}</strong></span>
             </div>
           </div>
         `).join('');

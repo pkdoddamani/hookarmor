@@ -22,6 +22,28 @@ function startServerOrExit() {
   }
 }
 
+function setupGracefulShutdown(server, dispatcher, storage) {
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(chalk.yellow(`\n⏻  ${signal} received: stopping incoming traffic and draining in-flight webhooks...`));
+    server.close();
+    if (dispatcher && dispatcher.drain) {
+      await dispatcher.drain(15000);
+    }
+    if (storage && storage.db) {
+      try {
+        storage.db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch (_) {}
+    }
+    console.log(chalk.green('✔  Shutdown complete.'));
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
 function apiHeaders(apiKey) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
@@ -45,7 +67,8 @@ program
   .action((options) => {
     const port = parseInt(options.port, 10);
     const host = options.host;
-    const { server, storage, mockEnabled } = startServerOrExit();
+    const { server, storage, dispatcher, mockEnabled } = startServerOrExit();
+    setupGracefulShutdown(server, dispatcher, storage);
 
     // Ensure a default mock endpoint exists for first-time onboarding (local simulation only)
     if (mockEnabled && !storage.getEndpoint('demo-stripe')) {
@@ -78,11 +101,17 @@ program
   .description('Tunnel incoming webhooks directly to a local or remote target')
   .argument('<targetUrl>', 'Destination target URL (e.g. http://localhost:3000/api/webhook)')
   .option('-p, --port <number>', 'Proxy port', '4000')
+  .option('-H, --host <host>', 'Host address to bind to', '127.0.0.1')
   .option('-e, --endpoint <id>', 'Endpoint ID slug', 'local-dev')
   .option('-s, --secret <secret>', 'Provider signing secret: verify on ingress and re-sign on delivery')
   .action(async (targetUrl, options) => {
     const port = parseInt(options.port, 10);
+    const host = options.host || '127.0.0.1';
+    if (host === '0.0.0.0') {
+      console.warn(chalk.yellow('\n[Security Warning] hookarmor listen is bound to 0.0.0.0 — reachable by anyone on your local network. Use 127.0.0.1 for local isolation.'));
+    }
     const { server, storage, dispatcher } = startServerOrExit();
+    setupGracefulShutdown(server, dispatcher, storage);
 
     storage.createEndpoint({
       id: options.endpoint,
@@ -103,10 +132,10 @@ program
       }
     });
 
-    server.listen(port, () => {
+    server.listen(port, host, () => {
       console.log(chalk.cyan.bold(`\n⚡ HookArmor Listen Active`));
-      console.log(`Forwarding: ${chalk.yellow(`http://localhost:${port}/in/${options.endpoint}`)} ➔ ${chalk.green(targetUrl)}`);
-      console.log(`Dashboard:  ${chalk.cyan(`http://localhost:${port}/dashboard`)}\n`);
+      console.log(`Forwarding: ${chalk.yellow(`http://${host}:${port}/in/${options.endpoint}`)} ➔ ${chalk.green(targetUrl)}`);
+      console.log(`Dashboard:  ${chalk.cyan(`http://${host}:${port}/dashboard`)}\n`);
     });
   });
 

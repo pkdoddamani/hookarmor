@@ -23,6 +23,24 @@ function svixSignature(secret, msgId, timestamp, rawBody) {
   return hmac.digest('base64');
 }
 
+const STRIPPED_INBOUND_HEADERS = new Set([
+  'forwarded',
+  'x-real-ip',
+  'x-original-url',
+  'x-rewrite-url',
+  'x-http-method-override',
+  'cf-connecting-ip',
+  'true-client-ip',
+  'proxy-authorization',
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-forwarded-port',
+  'x-forwarded-server',
+  'x-forwarded-prefix',
+  'x-forwarded-ssl'
+]);
+
 class Dispatcher extends EventEmitter {
   constructor(storage, options = {}) {
     super();
@@ -33,6 +51,7 @@ class Dispatcher extends EventEmitter {
     this.defaultTimeoutMs = options.defaultTimeoutMs || 25000;
     this.strictSSRF = Boolean(options.strictSSRF);
     this.signingSecret = options.signingSecret || null;
+    this.activeDeliveries = 0;
   }
 
   // Verify signature at ingress (preventing HookArmor from acting as an open signature oracle).
@@ -204,14 +223,29 @@ class Dispatcher extends EventEmitter {
     return new Date(Date.now() + delaySec * 1000).toISOString().slice(0, 19).replace('T', ' ');
   }
 
+  pendingDeliveries() {
+    return this.activeDeliveries;
+  }
+
+  async drain(timeoutMs = 15000) {
+    const start = Date.now();
+    while (this.pendingDeliveries() > 0) {
+      if (Date.now() - start > timeoutMs) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return this.pendingDeliveries() === 0;
+  }
+
   // Callers must have claimed the event (status 'replaying') before dispatching
   async dispatch(event, endpoint, { replay = false } = {}) {
     const limit = endpoint.concurrency_limit || this.defaultConcurrency;
     await this.acquireSlot(endpoint.id, limit);
+    this.activeDeliveries++;
 
     try {
       return await this._executeDispatch(event, endpoint, replay);
     } finally {
+      this.activeDeliveries = Math.max(0, this.activeDeliveries - 1);
       this.releaseSlot(endpoint.id, limit);
     }
   }
@@ -222,9 +256,16 @@ class Dispatcher extends EventEmitter {
 
     let headers = { ...event.headers };
 
-    // Never forward sender-supplied HookArmor headers; ours are added below
+    // Never forward sender-supplied HookArmor headers or spoofable routing headers
     for (const name of Object.keys(headers)) {
-      if (name.startsWith('x-hookarmor-')) delete headers[name];
+      const lower = name.toLowerCase();
+      if (
+        lower.startsWith('x-hookarmor-') ||
+        lower.startsWith('x-forwarded-') ||
+        STRIPPED_INBOUND_HEADERS.has(lower)
+      ) {
+        delete headers[name];
+      }
     }
 
     // Preserve original raw signatures before re-signing for audit and forensic trace
@@ -276,6 +317,9 @@ class Dispatcher extends EventEmitter {
     headers['x-hookarmor-original-timestamp'] = originalTimestamp;
     const isReplay = replay || event.attempts > 0;
     headers['x-hookarmor-is-replay'] = isReplay ? 'true' : 'false';
+    if (!event.verified) {
+      headers['x-hookarmor-unverified'] = 'true';
+    }
 
     return new Promise((resolve) => {
       let settled = false;

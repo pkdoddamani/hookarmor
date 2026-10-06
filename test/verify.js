@@ -6,19 +6,18 @@ const { createServer } = require('../src/server');
 async function runTests() {
   console.log('🧪 Starting HookArmor Hardened Verification Test Suite (Post-Audit)...\n');
 
-  const port = 4999;
   const { server, storage, dispatcher, worker, app } = createServer({
     dbPath: ':memory:',
     retryIntervalMs: 500 // Fast interval for testing
   });
 
-  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+  await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', resolve).on('error', reject));
+  const port = server.address().port;
   const baseUrl = `http://127.0.0.1:${port}`;
 
   // Dedicated test capture server to inspect exact forwarded headers & timestamps
   let capturedHeaders = null;
   let capturedBody = null;
-  const capturePort = 4998;
   const captureServer = http.createServer((req, res) => {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -29,7 +28,8 @@ async function runTests() {
       res.end(JSON.stringify({ status: 'captured' }));
     });
   });
-  await new Promise(resolve => captureServer.listen(capturePort, '127.0.0.1', resolve));
+  await new Promise((resolve, reject) => captureServer.listen(0, '127.0.0.1', resolve).on('error', reject));
+  const capturePort = captureServer.address().port;
 
   try {
     // 1. SSRF Protection & Endpoint Creation
@@ -238,7 +238,6 @@ async function runTests() {
     console.log('Test 6: Testing Concurrency Limiting (Pool Protection)...');
     let maxConcurrentObserved = 0;
     let currentConcurrent = 0;
-    const slowPort = 4997;
     const slowServer = http.createServer((req, res) => {
       currentConcurrent++;
       if (currentConcurrent > maxConcurrentObserved) maxConcurrentObserved = currentConcurrent;
@@ -248,7 +247,8 @@ async function runTests() {
         res.end('ok');
       }, 50);
     });
-    await new Promise(r => slowServer.listen(slowPort, '127.0.0.1', r));
+    await new Promise((resolve, reject) => slowServer.listen(0, '127.0.0.1', resolve).on('error', reject));
+    const slowPort = slowServer.address().port;
 
     storage.createEndpoint({
       id: 'concurrency-ep',
@@ -302,12 +302,12 @@ async function runTests() {
 
     // 8. Auth Protection & API Key Enforcement (Post-Audit Fix)
     console.log('Test 8: Testing API Key Authentication & Route Lockdown...');
-    const authPort = 4997;
     const authServerObj = createServer({
       dbPath: ':memory:',
       apiKey: 'vault_test_key_999'
     });
-    await new Promise(r => authServerObj.server.listen(authPort, '127.0.0.1', r));
+    await new Promise((resolve, reject) => authServerObj.server.listen(0, '127.0.0.1', resolve).on('error', reject));
+    const authPort = authServerObj.server.address().port;
     const authBaseUrl = `http://127.0.0.1:${authPort}`;
 
     try {
@@ -339,17 +339,21 @@ async function runTests() {
       console.log('  ✅ Bearer token and x-api-key headers validated with 200.');
       console.log('  ✅ Ingress gateway remains open for external webhook providers.\n');
     } finally {
+      authServerObj.worker.stop();
       authServerObj.server.close();
     }
 
     console.log('🎉 ALL 8 HARDENED HOOKARMOR VERIFICATION TESTS PASSED PERFECTLY!\n');
   } finally {
     captureServer.close();
+    worker.stop();
     server.close();
   }
 }
 
-runTests().catch((err) => {
+runTests().then(() => {
+  process.exit(0);
+}).catch((err) => {
   console.error('❌ Test failed:', err);
   process.exit(1);
 });

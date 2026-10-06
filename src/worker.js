@@ -9,6 +9,7 @@ class RetryWorker extends EventEmitter {
     this.retentionDays = options.retentionDays || 0;
     this.pruneIntervalMs = options.pruneIntervalMs || 60 * 60 * 1000;
     this.lastPruneAt = 0;
+    this.instanceId = options.instanceId || null;
     this.timer = null;
     this.isProcessing = false;
   }
@@ -41,13 +42,19 @@ class RetryWorker extends EventEmitter {
     this.isProcessing = true;
 
     try {
+      if (this.instanceId) {
+        this.storage.heartbeatInstance(this.instanceId);
+      }
+      this.storage.recoverInterruptedDeliveries(this.instanceId);
+      this.storage.reapStaleInstances(300);
+
       this.prune();
 
       const eventsDue = this.storage.getEventsDueForRetry(25);
       if (!eventsDue || eventsDue.length === 0) return;
 
       for (const event of eventsDue) {
-        const claimed = this.storage.claimEventForRetry(event.id);
+        const claimed = this.storage.claimEventForRetry(event.id, this.instanceId);
         if (!claimed) continue; // Another process or manual replay already claimed it
 
         const endpoint = this.storage.getEndpoint(event.endpoint_id);
