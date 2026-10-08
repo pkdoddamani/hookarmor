@@ -52,7 +52,15 @@ class Storage {
       if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
       }
+      try {
+        fs.chmodSync(dataDir, 0o777);
+      } catch (_) {}
       dbPath = path.join(dataDir, 'hookarmor.db');
+    }
+    if (typeof dbPath === 'string' && fs.existsSync(dbPath)) {
+      try {
+        fs.chmodSync(dbPath, 0o666);
+      } catch (_) {}
     }
     const envKey = process.env.HOOKARMOR_ENCRYPTION_KEY;
     this.encryptionKey = options.encryptionKey !== undefined
