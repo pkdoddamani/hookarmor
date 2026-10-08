@@ -7,10 +7,8 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-# Create data directory for SQLite persistence and configure non-root ownership
-RUN mkdir -p /app/data && chown -R node:node /app
-
-USER node
+# Create data directory for SQLite persistence
+RUN mkdir -p /app/data
 
 EXPOSE 4000
 
