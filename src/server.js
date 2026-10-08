@@ -687,9 +687,11 @@ function createServer(options = {}) {
     res.sendFile('og-preview.png', { root: path.join(__dirname, 'public') });
   });
 
-  // Root Route: Dashboard by default on self-hosted instances; Landing page only if explicitly enabled (§6.13)
+  // Root Route: Marketing landing page on cloud production (Railway/Render) or when explicitly configured;
+  // Dashboard on /dashboard and /app, or on / for local self-hosted instances.
   app.get('/', (req, res) => {
-    if (process.env.HOOKARMOR_SERVE_LANDING === 'true') {
+    const isCloud = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.HOOKARMOR_SERVE_LANDING === 'true');
+    if (isCloud && process.env.HOOKARMOR_SERVE_LANDING !== 'false') {
       return res.sendFile('landing.html', { root: path.join(__dirname, 'public') });
     }
     res.sendFile('index.html', { root: path.join(__dirname, 'public') });

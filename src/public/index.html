@@ -466,10 +466,11 @@
     <a href="/" class="brand">
       <div class="brand-icon">🛡️</div>
       <div class="brand-text">
-        <h1>HookArmor <span class="brand-tag">v1.0 Ready</span></h1>
+        <h1>HookArmor <span class="brand-tag">v1.2.2 Live</span></h1>
       </div>
     </a>
     <div class="nav-actions">
+      <a href="/" class="btn btn-outline btn-sm" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;">🌐 Home</a>
       <div id="admin-badge-area" style="display: flex; align-items: center; gap: 0.5rem;"></div>
       <button class="btn btn-secondary btn-sm" onclick="openSimulatorModal()">⚡ Test Simulator</button>
       <button class="btn btn-danger btn-sm" id="replay-all-btn" onclick="replayAllFailed()">🔄 Replay All Dead-Letter</button>
@@ -762,6 +763,10 @@
     function logoutAdmin() {
       sessionStorage.removeItem('ha_admin_session');
       updateAdminUI();
+      if (ws) ws.close();
+      loadEndpoints();
+      loadStats();
+      loadEvents();
     }
 
     async function openLeadsModal() {
@@ -875,11 +880,18 @@
     async function loadStats() {
       try {
         const res = await fetch('/api/stats', { headers: getAuthHeaders() });
+        if (!res.ok) {
+          document.getElementById('metric-total').textContent = '0';
+          document.getElementById('metric-delivered').textContent = '0';
+          document.getElementById('metric-failed').textContent = '0';
+          document.getElementById('metric-latency').textContent = '0 ms';
+          return;
+        }
         const data = await res.json();
-        document.getElementById('metric-total').textContent = data.total;
-        document.getElementById('metric-delivered').textContent = data.delivered;
-        document.getElementById('metric-failed').textContent = data.failed;
-        document.getElementById('metric-latency').textContent = `${data.avgLatencyMs} ms`;
+        document.getElementById('metric-total').textContent = data.total !== undefined ? data.total : 0;
+        document.getElementById('metric-delivered').textContent = data.delivered !== undefined ? data.delivered : 0;
+        document.getElementById('metric-failed').textContent = data.failed !== undefined ? data.failed : 0;
+        document.getElementById('metric-latency').textContent = `${data.avgLatencyMs !== undefined ? data.avgLatencyMs : 0} ms`;
       } catch (e) {
         console.error(e);
       }
@@ -888,9 +900,18 @@
     async function loadEndpoints() {
       try {
         const res = await fetch('/api/endpoints', { headers: getAuthHeaders() });
-        cachedEndpoints = await res.json();
         const container = document.getElementById('endpoints-list');
         const simSelect = document.getElementById('sim-endpoint-select');
+
+        if (!res.ok) {
+          if (res.status === 401 && !getApiKey()) {
+            container.innerHTML = `<div style="font-size: 0.8rem; color: #94a3b8; padding: 0.5rem 0;">🔒 Click <a href="javascript:void(0)" onclick="promptApiKey()" style="color: #60a5fa; text-decoration: underline;">Admin Login</a> above to manage endpoints.</div>`;
+            if (simSelect) simSelect.innerHTML = `<option value="">Auth Required</option>`;
+          }
+          return;
+        }
+
+        cachedEndpoints = await res.json();
 
         if (cachedEndpoints.length === 0) {
           container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">No endpoints yet. Click "+ New" above to create one.</div>`;
@@ -927,8 +948,24 @@
         let url = '/api/events?limit=50';
         if (currentFilter) url += `&status=${encodeURIComponent(currentFilter)}`;
         const res = await fetch(url, { headers: getAuthHeaders() });
-        const events = await res.json();
         const tbody = document.getElementById('events-table-body');
+
+        if (!res.ok) {
+          if (res.status === 401 && !getApiKey()) {
+            tbody.innerHTML = `
+              <tr>
+                <td colspan="7" style="text-align: center; color: #94a3b8; padding: 3rem;">
+                  <div style="font-size: 1.1rem; font-weight: 600; color: #f1f5f9; margin-bottom: 0.5rem;">🔒 Operations Dashboard Protected</div>
+                  <div style="font-size: 0.85rem; max-width: 480px; margin: 0 auto 1.25rem;">
+                    This HookArmor instance is protected by a management API key. Click <strong>Admin Login</strong> above to enter your key and monitor live webhook deliveries.
+                  </div>
+                  <button class="btn btn-primary btn-sm" onclick="promptApiKey()">🔑 Admin Login with API Key</button>
+                </td>
+              </tr>
+            `;
+          }
+          return;
+        const events = await res.json();
 
         if (events.length === 0) {
           tbody.innerHTML = `
