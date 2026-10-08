@@ -14,6 +14,26 @@ const { checkUrl } = require('./netguard');
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const ENDPOINT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+const SENSITIVE_INBOUND_HEADERS = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key'
+]);
+
+function redactInboundHeaders(headers) {
+  if (!headers || typeof headers !== 'object') return {};
+  const clean = { ...headers };
+  for (const name of Object.keys(clean)) {
+    if (SENSITIVE_INBOUND_HEADERS.has(name.toLowerCase())) {
+      clean[name] = '[REDACTED]';
+    }
+  }
+  return clean;
+}
+
 function envFlag(name) {
   const v = process.env[name];
   if (v === undefined || v === '') return undefined;
@@ -324,16 +344,28 @@ function createServer(options = {}) {
       if (idempotencyKey) {
         const existing = storage.findEventByIdempotencyKey(endpoint.id, idempotencyKey);
         if (existing) {
-          return res.status(200).json({
-            received: true,
-            hookarmor_id: existing.id,
-            status: 'deduplicated',
-            message: `Idempotency key already received (current status: ${existing.status}). Suppressed duplicate delivery.`
-          });
+          // If the event was cryptographically verified, deduplicate by ID as standard.
+          // If the endpoint is unverified (no secret), only deduplicate if the payload bodies match,
+          // preventing an attacker from suppressing real events with arbitrary payloads.
+          const isSamePayload = !existing.raw_body || Buffer.compare(existing.raw_body, rawBodyBuffer) === 0;
+          if (verified || isSamePayload) {
+            return res.status(200).json({
+              received: true,
+              hookarmor_id: existing.id,
+              status: 'deduplicated',
+              message: `Idempotency key already received (current status: ${existing.status}). Suppressed duplicate delivery.`
+            });
+          } else {
+            // Unverified payload collision: do not suppress. Qualify idempotency key so both events persist.
+            idempotencyKey = `${idempotencyKey}_collision_${Date.now()}`;
+          }
         }
       }
 
       const eventId = `evt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+
+      // Redact sensitive credentials (auth tokens, API keys, cookies) before persistent storage
+      const storedHeaders = redactInboundHeaders(headers);
 
       // 1. Durably save event in SQLite, already claimed for its first delivery
       savedEvent = storage.saveEvent({
@@ -342,7 +374,7 @@ function createServer(options = {}) {
         idempotencyKey,
         provider,
         eventType,
-        headers,
+        headers: storedHeaders,
         rawBody: rawBodyBuffer,
         status: 'replaying',
         claimedBy: instanceId,

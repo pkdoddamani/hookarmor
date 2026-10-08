@@ -878,6 +878,62 @@ test('custom_headers: outbound dispatch includes configured destination headers'
   }
 });
 
+test('inbound sensitive headers (authorization, cookie, x-api-key) are redacted before storage', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_redact', name: 'ep_redact', targetUrl: target.url });
+    const res = await fetch(`${ha.base}/in/ep_redact`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer leaked-secret-token',
+        'Cookie': 'session=super-secret-cookie',
+        'X-Api-Key': 'key-12345'
+      },
+      body: JSON.stringify({ event: 'ping' })
+    });
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    const stored = ha.storage.getEvent(body.hookarmor_id);
+    assert.strictEqual(stored.headers['authorization'], '[REDACTED]');
+    assert.strictEqual(stored.headers['cookie'], '[REDACTED]');
+    assert.strictEqual(stored.headers['x-api-key'], '[REDACTED]');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('unsigned endpoint dedupe does not suppress conflicting payloads with the same ID', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_poison', name: 'ep_poison', targetUrl: target.url });
+    // First: attacker sends an unverified event with ID 'evt_clash'
+    const res1 = await fetch(`${ha.base}/in/ep_poison`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'evt_clash', amount: 10 })
+    });
+    const b1 = await res1.json();
+    assert.strictEqual(b1.received, true);
+
+    // Second: legitimate provider delivers real payload with same ID 'evt_clash' but different amount
+    const res2 = await fetch(`${ha.base}/in/ep_poison`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'evt_clash', amount: 50000 })
+    });
+    const b2 = await res2.json();
+    assert.notStrictEqual(b2.status, 'deduplicated', 'Conflicting payload must not be suppressed by unverified pre-occupation');
+    assert.strictEqual(b2.received, true);
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

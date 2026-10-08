@@ -6,6 +6,8 @@
   },
   "deploy": {
     "startCommand": "node bin/hookarmor.js start --port $PORT",
+    "healthcheckPath": "/healthz",
+    "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }

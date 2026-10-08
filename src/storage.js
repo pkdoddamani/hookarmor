@@ -53,15 +53,11 @@ class Storage {
         fs.mkdirSync(dataDir, { recursive: true });
       }
       try {
-        fs.chmodSync(dataDir, 0o777);
+        fs.chmodSync(dataDir, 0o750);
       } catch (_) {}
       dbPath = path.join(dataDir, 'hookarmor.db');
     }
-    if (typeof dbPath === 'string' && fs.existsSync(dbPath)) {
-      try {
-        fs.chmodSync(dbPath, 0o666);
-      } catch (_) {}
-    }
+    this.dbPath = dbPath;
     const envKey = process.env.HOOKARMOR_ENCRYPTION_KEY;
     this.encryptionKey = options.encryptionKey !== undefined
       ? deriveKey(options.encryptionKey)
@@ -74,6 +70,19 @@ class Storage {
 
     this.db = new Database(dbPath);
     this.init();
+    this._ensureDbPermissions();
+  }
+
+  _ensureDbPermissions() {
+    if (!this.dbPath || typeof this.dbPath !== 'string') return;
+    for (const suffix of ['', '-wal', '-shm']) {
+      const p = this.dbPath + suffix;
+      if (fs.existsSync(p)) {
+        try {
+          fs.chmodSync(p, 0o640);
+        } catch (_) {}
+      }
+    }
   }
 
   init() {
