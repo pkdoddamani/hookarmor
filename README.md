@@ -63,7 +63,7 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 
 Deploy your own private, persistent HookArmor instance to the cloud with one click:
 
-> **Before you deploy:** production instances refuse to start without `HOOKARMOR_API_KEY` (Render generates one automatically). Events live in SQLite under `/app/data`, so that path must be on persistent storage: Render's blueprint attaches a disk (paid `starter` plan, since free instances have no persistent disk), and on **Railway you must add a Volume mounted at `/app/data`** or every redeploy wipes the queue.
+> **Before you deploy:** production instances refuse to start without `HOOKARMOR_API_KEY` (Render generates one automatically, and on Railway you must set it in service variables). Events live in SQLite under `/app/data` in the Docker image, so that path must be on persistent storage: Render's blueprint attaches a disk (paid `starter` plan, since free instances have no persistent disk), and on **Railway you must add a Volume mounted at `/app/data`** or every redeploy wipes the queue.
 
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template?template=https://github.com/pkdoddamani/hookarmor)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/pkdoddamani/hookarmor)
@@ -301,7 +301,7 @@ When `HOOKARMOR_API_KEY` is present:
 | `HOOKARMOR_ENCRYPTION_KEY` | none | 256-bit key enabling AES-256-GCM at-rest encryption for endpoint secrets |
 | `HOOKARMOR_STRICT_SSRF` | `true` in production, `false` locally | Block loopback, private-network and link-local delivery targets (checked on the resolved IP at delivery time). Cloud metadata addresses are always blocked |
 | `HOOKARMOR_SIGNING_SECRET` | none | Enables Mode B internal signatures |
-| `HOOKARMOR_DATA_DIR` | `./data` (current directory) | Where `hookarmor.db` is stored |
+| `HOOKARMOR_DATA_DIR` | `./data` (current directory; Docker image defaults this to `/app/data`) | Where `hookarmor.db` is stored |
 | `HOOKARMOR_RETENTION_DAYS` | `0` (keep forever) | Delete delivered events older than this many days; failed events are always kept |
 | `HOOKARMOR_MAX_BODY` | `10mb` | Maximum webhook body size |
 | `HOOKARMOR_ENABLE_MOCK` | `false` in production | Mount the `/mock/*` simulation receiver |
