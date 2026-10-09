@@ -11,7 +11,28 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Dashboard Inline Script Syntax
+        run: node -e "const fs = require('fs'); const html = fs.readFileSync('src/public/index.html', 'utf8'); const script = html.match(/<script>([\s\S]*?)<\/script>/i)[1]; new Function(script);"
+
+      - name: Run test suite
+        run: npm test
+
   build-and-push:
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

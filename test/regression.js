@@ -728,7 +728,7 @@ test('B7: HTTP response includes security headers and disables X-Powered-By', as
   }
 });
 
-test('N1: active heartbeating instance claims are not reclaimed after 180s', async () => {
+test('N1: active heartbeating instance claims within lease are not stolen, but expire if hung', async () => {
   const ha = await startHA();
   try {
     ha.storage.createEndpoint({ id: 'ep_n1', name: 'ep_n1', targetUrl: 'http://127.0.0.1:4999/hook' });
@@ -742,19 +742,26 @@ test('N1: active heartbeating instance claims are not reclaimed after 180s', asy
       status: 'replaying',
       claimedBy: 'inst_live'
     });
-    // Artificially age claimed_at to 200s ago
-    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now', '-200 seconds') WHERE id = 'evt_n1'").run();
+    // Claim is active within valid lease (e.g. 15s ago, well within 60s lease)
+    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now', '-15 seconds') WHERE id = 'evt_n1'").run();
 
     // inst_live heartbeats now
     ha.storage.heartbeatInstance('inst_live');
 
-    // recoverInterruptedDeliveries must NOT reclaim this event because inst_live is heartbeating
-    const recovered = ha.storage.recoverInterruptedDeliveries();
-    assert.strictEqual(recovered, 0, 'Must not steal claim from an active heartbeating instance');
+    // recoverInterruptedDeliveries must NOT reclaim this event because inst_live is heartbeating and lease is active
+    const recovered = ha.storage.recoverInterruptedDeliveries(60);
+    assert.strictEqual(recovered, 0, 'Must not steal claim from an active heartbeating instance during its lease');
     
     const ev = ha.storage.getEvent('evt_n1');
     assert.strictEqual(ev.status, 'replaying');
     assert.strictEqual(ev.claimed_by, 'inst_live');
+
+    // When the lease has expired (e.g. delivery hung for 120s), it MUST be reclaimed to prevent permanent stall (F-12)
+    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now', '-120 seconds') WHERE id = 'evt_n1'").run();
+    const reclaimedHung = ha.storage.recoverInterruptedDeliveries(60);
+    assert.strictEqual(reclaimedHung, 1, 'Hung claim with expired lease must be reclaimed to prevent permanent stall');
+    const evReclaimed = ha.storage.getEvent('evt_n1');
+    assert.strictEqual(evReclaimed.status, 'failed');
   } finally {
     await ha.close();
   }
@@ -981,10 +988,11 @@ test('F-01: unverified events ingested without secret are not re-signed with rea
     assert.strictEqual(replayRes.status, 200);
 
     const replayed = await waitFor(() => target.requests[0]);
-    assert.ok(replayed, 'Event should be delivered');
-    // It must NOT have been re-signed with the real secret
+    // Provider signature header must be stripped so downstream SDKs cannot accept unverified signatures (N9)
     const sig = replayed.headers['stripe-signature'];
-    assert.strictEqual(sig, 'fake_signature', 'Unverified event must keep original header and not be laundered into valid signature');
+    assert.strictEqual(sig, undefined, 'Unverified event must strip provider signature header (N9)');
+    assert.strictEqual(replayed.headers['x-hookarmor-unverified'], 'true', 'Unverified event must be flagged with x-hookarmor-unverified header');
+    assert.strictEqual(replayed.headers['x-hookarmor-original-stripe-signature'], 'fake_signature', 'Original signature must be preserved in x-hookarmor-original-* for forensic audit');
   } finally {
     await ha.close();
     target.close();
@@ -1092,6 +1100,131 @@ test('F-06: websocket rejects connection with untrusted Origin in local no-auth 
       client.on('error', () => resolve('rejected'));
     });
     assert.strictEqual(result, 'rejected', 'WebSocket handshake must be rejected for cross-site origin');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('N9: unverified events strip provider signature headers on outbound delivery and replay', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_n9', name: 'ep_n9', targetUrl: target.url });
+    // Inbound request carries forged/unverified signature headers for Stripe, Shopify, Svix, GitHub
+    const res = await fetch(`${ha.base}/in/ep_n9`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': 't=1,v1=forged_stripe',
+        'X-Shopify-Hmac-Sha256': 'forged_shopify',
+        'X-Hub-Signature-256': 'sha256=forged_gh',
+        'Svix-Id': 'msg_123',
+        'Svix-Signature': 'v1,forged_svix',
+        'Svix-Timestamp': '123456'
+      },
+      body: JSON.stringify({ hello: 'world' })
+    });
+    assert.strictEqual(res.status, 200);
+    const { hookarmor_id } = await res.json();
+
+    const delivered = await waitFor(() => target.requests[0]);
+    assert.ok(delivered);
+    assert.strictEqual(delivered.headers['stripe-signature'], undefined);
+    assert.strictEqual(delivered.headers['x-shopify-hmac-sha256'], undefined);
+    assert.strictEqual(delivered.headers['x-hub-signature-256'], undefined);
+    assert.strictEqual(delivered.headers['svix-signature'], undefined);
+    assert.strictEqual(delivered.headers['x-hookarmor-unverified'], 'true');
+    assert.strictEqual(delivered.headers['x-hookarmor-original-stripe-signature'], 't=1,v1=forged_stripe');
+    assert.strictEqual(delivered.headers['x-hookarmor-original-shopify-hmac'], 'forged_shopify');
+    assert.strictEqual(delivered.headers['x-hookarmor-original-svix-signature'], 'v1,forged_svix');
+
+    // Also verify on manual replay
+    target.requests.length = 0;
+    const replayRes = await fetch(`${ha.base}/api/events/${hookarmor_id}/replay`, { method: 'POST', headers: JSON_HEADERS });
+    assert.strictEqual(replayRes.status, 200);
+
+    const replayed = await waitFor(() => target.requests[0]);
+    assert.ok(replayed);
+    assert.strictEqual(replayed.headers['stripe-signature'], undefined);
+    assert.strictEqual(replayed.headers['x-hookarmor-unverified'], 'true');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('F-09: DELETE /api/endpoints/:id returns 409 if endpoint has events in DLQ unless force=true', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_dlq_guard', name: 'ep_dlq_guard', targetUrl: 'http://127.0.0.1:9999/hook' });
+
+    // Seed a failed event into DLQ
+    ha.storage.saveEvent({
+      id: 'evt_dlq_guard_1',
+      endpointId: 'ep_dlq_guard',
+      status: 'failed',
+      rawBody: '{"test":1}',
+      headers: {}
+    });
+
+    assert.strictEqual(ha.storage.countFailed('ep_dlq_guard'), 1);
+
+    // Attempt delete without force -> 409 Conflict
+    const delRes1 = await fetch(`${ha.base}/api/endpoints/ep_dlq_guard`, {
+      method: 'DELETE',
+      headers: JSON_HEADERS
+    });
+    assert.strictEqual(delRes1.status, 409);
+    const delBody1 = await delRes1.json();
+    assert.strictEqual(delBody1.failedCount, 1);
+    assert.ok(delBody1.error.includes('data loss'));
+
+    // Endpoint still exists
+    assert.ok(ha.storage.getEndpoint('ep_dlq_guard'));
+
+    // Attempt delete with force=true -> 200 OK
+    const delRes2 = await fetch(`${ha.base}/api/endpoints/ep_dlq_guard?force=true`, {
+      method: 'DELETE',
+      headers: JSON_HEADERS
+    });
+    assert.strictEqual(delRes2.status, 200);
+    assert.strictEqual(ha.storage.getEndpoint('ep_dlq_guard'), null);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('Lease Expiry: recoverInterruptedDeliveries reclaims stalled replaying events whose lease expired', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_lease', name: 'ep_lease', targetUrl: 'http://127.0.0.1:9999/hook' });
+    const instanceId = 'inst_live_active';
+    ha.storage.registerInstance({ id: instanceId, hostname: 'localhost', pid: 1234 });
+
+    // Seed an event claimed by the active instance
+    ha.storage.saveEvent({
+      id: 'evt_lease_stalled',
+      endpointId: 'ep_lease',
+      status: 'replaying',
+      claimedBy: instanceId,
+      rawBody: '{"test":1}',
+      headers: {}
+    });
+
+    // Make the claim timestamp ancient (e.g. 120 seconds ago)
+    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now', '-120 seconds') WHERE id = ?").run('evt_lease_stalled');
+
+    // Instance heartbeat is fresh (0s ago)
+    ha.storage.heartbeatInstance(instanceId);
+
+    // Normal recovery with default 60s lease timeout should reclaim this stalled event
+    const reclaimed = ha.storage.recoverInterruptedDeliveries(60);
+    assert.strictEqual(reclaimed, 1, 'Stalled delivery with expired lease must be reclaimed');
+
+    const recovered = ha.storage.getEvent('evt_lease_stalled');
+    assert.strictEqual(recovered.status, 'failed');
+    assert.strictEqual(recovered.claimed_by, null);
+    assert.ok(recovered.last_error.includes('lease expired'));
   } finally {
     await ha.close();
   }

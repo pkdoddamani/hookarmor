@@ -556,8 +556,25 @@ function createServer(options = {}) {
     res.json(publicEndpoint(endpoint));
   });
 
-  // Delete an endpoint
+  // Delete an endpoint (F-09: protected against accidental DLQ data loss unless force=true)
   app.delete('/api/endpoints/:id', (req, res) => {
+    const endpoint = storage.getEndpoint(req.params.id);
+    if (!endpoint) return res.status(404).json({ error: 'Endpoint not found' });
+
+    const force = req.query.force === 'true' || req.query.force === '1';
+    if (!force) {
+      const failedCount = storage.countFailed(req.params.id);
+      const pendingCount = storage.countPending(req.params.id);
+      if (failedCount > 0 || pendingCount > 0) {
+        return res.status(409).json({
+          error: 'Endpoint has active pending or failed events in DLQ. Deletion would cause data loss.',
+          failedCount,
+          pendingCount,
+          hint: 'Pass ?force=true to permanently delete the endpoint and discard all associated events.'
+        });
+      }
+    }
+
     const deleted = storage.deleteEndpoint(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Endpoint not found' });
     res.json({ success: true, message: 'Endpoint deleted' });

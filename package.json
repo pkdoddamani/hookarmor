@@ -1,6 +1,6 @@
 {
   "name": "hookarmor",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Zero-loss Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and B2B SaaS.",
   "main": "index.js",
   "bin": {

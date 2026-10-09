@@ -445,6 +445,13 @@ class Storage {
     return this.db.prepare("SELECT count(*) AS n FROM events WHERE status = 'failed'").get().n;
   }
 
+  countPending(endpointId = null) {
+    if (endpointId) {
+      return this.db.prepare("SELECT count(*) AS n FROM events WHERE status IN ('pending', 'replaying') AND endpoint_id = ?").get(endpointId).n;
+    }
+    return this.db.prepare("SELECT count(*) AS n FROM events WHERE status IN ('pending', 'replaying')").get().n;
+  }
+
   getEventsDueForRetry(limit = 25) {
     // datetime() normalises both legacy ISO-8601 values and SQLite-format values before comparing
     const sql = `
@@ -572,14 +579,15 @@ class Storage {
   // Run at startup or worker tick:
   // Reclaim events if:
   // 1. claimed_by is NULL, OR
-  // 2. claimed_by is not active in instances table (last_heartbeat < 45 seconds ago)
-  // NOTE: Claims held by live heartbeating instances are never reclaimed merely due to age (N1 fix).
-  recoverInterruptedDeliveries() {
+  // 2. claimed_by is not active in instances table (last_heartbeat < 45 seconds ago), OR
+  // 3. Claim lease expired (claimed_at older than leaseTimeoutSeconds, default 60s > 2x delivery timeout),
+  //    preventing in-memory crashes or hung dispatches in live instances from stalling an event indefinitely.
+  recoverInterruptedDeliveries(leaseTimeoutSeconds = 60) {
     const sql = `
       UPDATE events
       SET status = 'failed',
           next_retry_at = datetime('now'),
-          last_error = COALESCE(last_error, 'Delivery interrupted by restart'),
+          last_error = COALESCE(last_error, 'Delivery lease expired or interrupted by restart'),
           claimed_by = NULL,
           claimed_at = NULL,
           updated_at = datetime('now')
@@ -589,9 +597,10 @@ class Storage {
           OR claimed_by NOT IN (
             SELECT id FROM instances WHERE datetime(last_heartbeat) >= datetime('now', '-45 seconds')
           )
+          OR datetime(claimed_at) < datetime('now', '-' || ? || ' seconds')
         )
     `;
-    return this.db.prepare(sql).run().changes;
+    return this.db.prepare(sql).run(leaseTimeoutSeconds).changes;
   }
 
   // Delete delivered events (and their attempt logs) older than `days`. Failed events are kept.

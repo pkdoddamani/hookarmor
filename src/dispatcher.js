@@ -304,6 +304,26 @@ class Dispatcher extends EventEmitter {
       headers['x-hookarmor-signature'] = `t=${freshTs},v1=${internalSig}`;
     }
 
+    // Strip provider signature headers if inbound event was unverified (N9 fix).
+    // Prevents forwarding unverified cryptographic material downstream that could be accepted
+    // under key rotation or shared secret environments.
+    if (!event.verified) {
+      for (const h of [
+        'stripe-signature',
+        'x-shopify-hmac-sha256',
+        'x-shopify-topic',
+        'x-hub-signature-256',
+        'x-hub-signature',
+        'svix-id',
+        'svix-signature',
+        'svix-timestamp',
+        'clerk-signature'
+      ]) {
+        delete headers[h];
+      }
+      headers['x-hookarmor-unverified'] = 'true';
+    }
+
     // Remove hop-by-hop and encoding headers
     delete headers['host'];
     delete headers['connection'];
