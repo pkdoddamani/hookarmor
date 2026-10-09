@@ -45,7 +45,50 @@ function decryptSecret(stored, key) {
   return decrypted.toString('utf8');
 }
 
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key'
+]);
+
 class Storage {
+  _writeHeaders(headers) {
+    if (!headers || typeof headers !== 'object') return '{}';
+    if (!this.encryptionKey) return JSON.stringify(headers);
+    const out = { ...headers };
+    for (const [k, v] of Object.entries(out)) {
+      if (SENSITIVE_HEADER_NAMES.has(k.toLowerCase()) && typeof v === 'string') {
+        out[k] = encryptSecret(v, this.encryptionKey);
+      }
+    }
+    return JSON.stringify(out);
+  }
+
+  _readHeaders(stored) {
+    if (!stored) return {};
+    let parsed;
+    try {
+      parsed = typeof stored === 'string' ? JSON.parse(stored) : stored;
+    } catch (_) {
+      return {};
+    }
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out = { ...parsed };
+    for (const [k, v] of Object.entries(out)) {
+      if (typeof v === 'string' && v.startsWith('enc:v1:')) {
+        try {
+          out[k] = decryptSecret(v, this.encryptionKey);
+        } catch (_) {
+          out[k] = '[ENCRYPTED]';
+        }
+      }
+    }
+    return out;
+  }
+
   constructor(dbPath, options = {}) {
     if (!dbPath) {
       const dataDir = process.env.HOOKARMOR_DATA_DIR || path.join(process.cwd(), 'data');
@@ -98,6 +141,7 @@ class Storage {
         name TEXT NOT NULL,
         target_url TEXT NOT NULL,
         secret TEXT,
+        provider TEXT,
         alert_webhook_url TEXT,
         auto_retry INTEGER DEFAULT 1,
         max_retries INTEGER DEFAULT 5,
@@ -173,6 +217,9 @@ class Storage {
     }
 
     const epColumns = this.db.prepare('PRAGMA table_info(endpoints)').all().map((c) => c.name);
+    if (!epColumns.includes('provider')) {
+      this.db.exec("ALTER TABLE endpoints ADD COLUMN provider TEXT");
+    }
     if (!epColumns.includes('custom_headers')) {
       this.db.exec("ALTER TABLE endpoints ADD COLUMN custom_headers TEXT DEFAULT '{}'");
     }
@@ -186,27 +233,29 @@ class Storage {
   }
 
   // Upsert. Omitting secret or alertWebhookUrl (undefined) keeps the stored value; '' clears it.
-  createEndpoint({ id, name, targetUrl, secret, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders = {} }) {
+  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders = {} }) {
     const existing = this.getEndpoint(id);
     const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
+    const finalProvider = provider !== undefined ? provider : (existing ? existing.provider : null);
     const finalAlert = alertWebhookUrl !== undefined ? alertWebhookUrl : (existing ? existing.alert_webhook_url : '');
     const finalHeaders = customHeaders !== undefined
       ? (typeof customHeaders === 'string' ? customHeaders : JSON.stringify(customHeaders || {}))
       : (existing ? JSON.stringify(existing.custom_headers || {}) : '{}');
     const encryptedSecret = encryptSecret(finalSecret, this.encryptionKey);
     this.db.prepare(`
-      INSERT INTO endpoints (id, name, target_url, secret, alert_webhook_url, auto_retry, max_retries, concurrency_limit, custom_headers)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO endpoints (id, name, target_url, secret, provider, alert_webhook_url, auto_retry, max_retries, concurrency_limit, custom_headers)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         target_url = excluded.target_url,
         secret = excluded.secret,
+        provider = excluded.provider,
         alert_webhook_url = excluded.alert_webhook_url,
         auto_retry = excluded.auto_retry,
         max_retries = excluded.max_retries,
         concurrency_limit = excluded.concurrency_limit,
         custom_headers = excluded.custom_headers
-    `).run(id, name, targetUrl, encryptedSecret || '', finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5, finalHeaders);
+    `).run(id, name, targetUrl, encryptedSecret || '', finalProvider || null, finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5, finalHeaders);
     return this.getEndpoint(id);
   }
 
@@ -245,7 +294,7 @@ class Storage {
     if (!idempotencyKey) return null;
     const row = this.db.prepare('SELECT * FROM events WHERE endpoint_id = ? AND idempotency_key = ? ORDER BY created_at ASC LIMIT 1').get(endpointId, idempotencyKey);
     if (!row) return null;
-    return { ...row, headers: JSON.parse(row.headers) };
+    return { ...row, headers: this._readHeaders(row.headers) };
   }
 
   saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', claimedBy = null, verified = false }) {
@@ -261,7 +310,7 @@ class Storage {
         idempotencyKey,
         provider,
         eventType,
-        JSON.stringify(headers),
+        this._writeHeaders(headers),
         rawBuffer,
         status,
         claimedBy,
@@ -277,7 +326,10 @@ class Storage {
     }
   }
 
-  getPendingCount() {
+  getPendingCount(endpointId = null) {
+    if (endpointId) {
+      return this.db.prepare("SELECT count(*) as count FROM events WHERE endpoint_id = ? AND status IN ('pending', 'replaying')").get(endpointId).count;
+    }
     return this.db.prepare("SELECT count(*) as count FROM events WHERE status IN ('pending', 'replaying')").get().count;
   }
 
@@ -314,7 +366,7 @@ class Storage {
     if (!row) return null;
     return {
       ...row,
-      headers: JSON.parse(row.headers)
+      headers: this._readHeaders(row.headers)
     };
   }
 
@@ -350,7 +402,7 @@ class Storage {
     const rows = this.db.prepare(sql).all(...params);
     return rows.map(r => ({
       ...r,
-      headers: JSON.parse(r.headers)
+      headers: this._readHeaders(r.headers)
     }));
   }
 
@@ -382,7 +434,7 @@ class Storage {
     params.push(limit);
     return this.db.prepare(sql).all(...params).map(r => ({
       ...r,
-      headers: JSON.parse(r.headers)
+      headers: this._readHeaders(r.headers)
     }));
   }
 
@@ -410,7 +462,7 @@ class Storage {
     const rows = this.db.prepare(sql).all(limit);
     return rows.map(r => ({
       ...r,
-      headers: JSON.parse(r.headers)
+      headers: this._readHeaders(r.headers)
     }));
   }
 
@@ -459,6 +511,20 @@ class Storage {
       WHERE id = ? AND status IN ('failed', 'pending', 'delivered')
     `).run(instanceId, eventId);
     return info.changes > 0;
+  }
+
+  // Release claim for a single event if dispatch or recording failed
+  releaseClaim(eventId) {
+    if (!eventId) return 0;
+    const stmt = this.db.prepare(`
+      UPDATE events
+      SET status = 'pending',
+          claimed_by = NULL,
+          claimed_at = NULL,
+          updated_at = datetime('now')
+      WHERE id = ? AND status = 'replaying'
+    `);
+    return stmt.run(eventId).changes;
   }
 
   // Release claims owned by a terminating instance so a successor can process them immediately

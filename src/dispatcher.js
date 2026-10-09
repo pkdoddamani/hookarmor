@@ -51,6 +51,7 @@ class Dispatcher extends EventEmitter {
     this.defaultTimeoutMs = options.defaultTimeoutMs || 25000;
     this.strictSSRF = Boolean(options.strictSSRF);
     this.signingSecret = options.signingSecret || null;
+    this.instanceId = options.instanceId || null;
     this.activeDeliveries = 0;
   }
 
@@ -288,7 +289,8 @@ class Dispatcher extends EventEmitter {
       : Buffer.from(String(event.raw_body || ''), 'utf8');
 
     // Re-sign outbound headers if endpoint secret is configured (Transparent Zero-Code-Change Mode)
-    if (endpoint.secret) {
+    // Only re-sign if the inbound event was verified (prevents signature laundering F-01)
+    if (endpoint.secret && event.verified) {
       headers = this.signHeaders(event.provider, rawBuffer, headers, endpoint.secret);
     }
 
@@ -362,6 +364,7 @@ class Dispatcher extends EventEmitter {
           });
         } catch (err) {
           console.error(`[Dispatcher] Failed to record attempt for ${event.id}:`, err.message);
+          try { this.storage.releaseClaim(event.id); } catch (_) {}
         }
 
         const result = {
@@ -457,7 +460,7 @@ class Dispatcher extends EventEmitter {
       err.code = 'NOT_FOUND';
       throw err;
     }
-    if (!this.storage.claimEventForManualReplay(eventId)) {
+    if (!this.storage.claimEventForManualReplay(eventId, this.instanceId)) {
       const err = new Error(`Event ${eventId} is already being delivered`);
       err.code = 'IN_FLIGHT';
       throw err;
@@ -473,7 +476,7 @@ class Dispatcher extends EventEmitter {
     const claimed = [];
     for (const event of failedEvents) {
       const endpoint = this.storage.getEndpoint(event.endpoint_id);
-      if (!endpoint || !this.storage.claimEventForRetry(event.id)) continue;
+      if (!endpoint || !this.storage.claimEventForRetry(event.id, this.instanceId)) continue;
       claimed.push(event.id);
       this.dispatch(event, endpoint, { replay: true }).catch((err) => {
         console.error(`[Dispatcher] Replay error for ${event.id}:`, err.message);

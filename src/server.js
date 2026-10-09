@@ -72,8 +72,18 @@ function createRateLimiter({ limit, windowMs }) {
 
 function publicEndpoint(ep) {
   if (!ep) return ep;
-  const { secret, ...rest } = ep;
-  return { ...rest, has_secret: Boolean(secret) };
+  const { secret, custom_headers, ...rest } = ep;
+  let maskedHeaders = {};
+  if (custom_headers && typeof custom_headers === 'object') {
+    for (const [k, v] of Object.entries(custom_headers)) {
+      if (SENSITIVE_INBOUND_HEADERS.has(k.toLowerCase())) {
+        maskedHeaders[k] = '••••••••';
+      } else {
+        maskedHeaders[k] = v;
+      }
+    }
+  }
+  return { ...rest, custom_headers: maskedHeaders, has_secret: Boolean(secret) };
 }
 
 function createServer(options = {}) {
@@ -164,7 +174,8 @@ function createServer(options = {}) {
     defaultConcurrency: options.defaultConcurrency || 5,
     defaultTimeoutMs: options.defaultTimeoutMs || 25000,
     strictSSRF,
-    signingSecret: options.signingSecret || process.env.HOOKARMOR_SIGNING_SECRET || null
+    signingSecret: options.signingSecret || process.env.HOOKARMOR_SIGNING_SECRET || null,
+    instanceId
   });
 
   const worker = new RetryWorker(storage, dispatcher, {
@@ -197,11 +208,22 @@ function createServer(options = {}) {
     path: '/ws',
     maxPayload: 4096,
     // Without an API key the feed is only served to localhost (blocks DNS-rebinding pages)
+    // and verifies Origin to prevent cross-site WebSocket hijacking (F-06)
     verifyClient: (info) => {
       if (apiKey) return true;
       const remote = info.req.socket && info.req.socket.remoteAddress;
       const isLoopbackRemote = !remote || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-      return isLoopbackRemote && LOCAL_HOSTNAMES.has(hostnameOf(info.req.headers.host));
+      if (!isLoopbackRemote || !LOCAL_HOSTNAMES.has(hostnameOf(info.req.headers.host))) return false;
+      const origin = info.origin || info.req.headers.origin;
+      if (origin) {
+        try {
+          const u = new URL(origin);
+          if (!LOCAL_HOSTNAMES.has(u.hostname)) return false;
+        } catch (_) {
+          return false;
+        }
+      }
+      return true;
     }
   });
 
@@ -257,23 +279,33 @@ function createServer(options = {}) {
   });
   const maxPendingEvents = clampInt(process.env.HOOKARMOR_MAX_PENDING_EVENTS, 50000, 100, 1000000);
 
-  // Ingress endpoint for webhooks - uses raw body parser to preserve raw bytes
-  app.post('/in/:endpointId', express.raw({ type: '*/*', limit: maxBody }), (req, res) => {
-    // Ingress rate limiting per IP
+  const ingressPreflight = (req, res, next) => {
     if (!ingressLimiter(req.ip)) {
+      res.setHeader('Connection', 'close');
       return res.status(429).json({ error: 'Too many ingress requests from this IP; rate limit exceeded' });
     }
-
-    // Storage capacity backpressure protection
-    if (storage.getPendingCount && storage.getPendingCount() >= maxPendingEvents) {
-      return res.status(503).json({ error: 'Ingress queue capacity reached. System is under high load; retry shortly.' });
-    }
-
     const endpointId = req.params.endpointId;
-    const endpoint = storage.getEndpoint(endpointId);
-
-    if (!endpoint) {
+    if (!ENDPOINT_ID_PATTERN.test(endpointId)) {
+      res.setHeader('Connection', 'close');
       return res.status(404).json({ error: 'HookArmor endpoint not found' });
+    }
+    const endpoint = storage.getEndpoint(endpointId);
+    if (!endpoint) {
+      res.setHeader('Connection', 'close');
+      return res.status(404).json({ error: 'HookArmor endpoint not found' });
+    }
+    req.endpoint = endpoint;
+    next();
+  };
+
+  // Ingress endpoint for webhooks - uses raw body parser to preserve raw bytes
+  app.post('/in/:endpointId', ingressPreflight, express.raw({ type: () => true, limit: maxBody }), (req, res) => {
+    const endpoint = req.endpoint;
+    const endpointId = endpoint.id;
+
+    // Storage capacity backpressure protection per endpoint
+    if (storage.getPendingCount && storage.getPendingCount(endpointId) >= maxPendingEvents) {
+      return res.status(503).json({ error: 'Ingress queue capacity reached. System is under high load; retry shortly.' });
     }
 
     const rawBodyBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
@@ -321,6 +353,15 @@ function createServer(options = {}) {
     if (eventType) eventType = eventType.slice(0, 200);
     if (idempotencyKey) idempotencyKey = String(idempotencyKey).slice(0, 255);
 
+    // Provider scheme pinning check (F-03)
+    if (endpoint.provider && provider !== endpoint.provider) {
+      return res.status(400).json({
+        error: `Signature scheme mismatch: endpoint is configured for ${endpoint.provider}, but received ${provider}`,
+        provider,
+        configuredProvider: endpoint.provider
+      });
+    }
+
     // 0. Verify signature on ingress if endpoint secret is configured
     let verified = false;
     if (endpoint.secret) {
@@ -364,17 +405,15 @@ function createServer(options = {}) {
 
       const eventId = `evt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
 
-      // Redact sensitive credentials (auth tokens, API keys, cookies) before persistent storage
-      const storedHeaders = redactInboundHeaders(headers);
-
       // 1. Durably save event in SQLite, already claimed for its first delivery
+      // (Sensitive headers are encrypted at rest by storage._writeHeaders)
       savedEvent = storage.saveEvent({
         id: eventId,
         endpointId: endpoint.id,
         idempotencyKey,
         provider,
         eventType,
-        headers: storedHeaders,
+        headers,
         rawBody: rawBodyBuffer,
         status: 'replaying',
         claimedBy: instanceId,
@@ -476,7 +515,7 @@ function createServer(options = {}) {
 
   // Create or Update Endpoint
   app.post('/api/endpoints', (req, res) => {
-    const { id, name, targetUrl, secret, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit, customHeaders, custom_headers } = req.body || {};
+    const { id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit, customHeaders, custom_headers } = req.body || {};
     if (!id || !name || !targetUrl) {
       return res.status(400).json({ error: 'id, name, and targetUrl are required' });
     }
@@ -488,6 +527,9 @@ function createServer(options = {}) {
     }
     if (secret !== undefined && (typeof secret !== 'string' || secret.length > 500)) {
       return res.status(400).json({ error: 'secret must be a string of at most 500 characters' });
+    }
+    if (provider !== undefined && provider !== null && (typeof provider !== 'string' || provider.length > 50)) {
+      return res.status(400).json({ error: 'provider must be a string of at most 50 characters' });
     }
     const targetCheck = checkUrl(String(targetUrl), strictSSRF);
     if (!targetCheck.ok) {
@@ -504,6 +546,7 @@ function createServer(options = {}) {
       name,
       targetUrl: String(targetUrl),
       secret,
+      provider: provider === undefined ? undefined : (provider ? String(provider) : null),
       alertWebhookUrl: alertWebhookUrl === undefined ? undefined : String(alertWebhookUrl || ''),
       autoRetry: autoRetry !== undefined ? autoRetry : 1,
       maxRetries: clampInt(maxRetries, 5, 1, 50),
@@ -531,6 +574,7 @@ function createServer(options = {}) {
     });
     res.json(events.map(e => ({
       ...e,
+      headers: redactInboundHeaders(e.headers),
       raw_body: Buffer.isBuffer(e.raw_body) ? e.raw_body.toString('utf8') : String(e.raw_body || '')
     })));
   });
@@ -542,6 +586,7 @@ function createServer(options = {}) {
     const attempts = storage.getAttempts(req.params.id);
     res.json({
       ...event,
+      headers: redactInboundHeaders(event.headers),
       raw_body: Buffer.isBuffer(event.raw_body) ? event.raw_body.toString('utf8') : String(event.raw_body || ''),
       attempts
     });
@@ -747,6 +792,14 @@ function createServer(options = {}) {
       return res.sendFile(fileName, { root: path.join(__dirname, 'public', 'blog') });
     }
     res.redirect('/blog');
+  });
+
+  // Error handling middleware: prevent stack traces leaking and return clean JSON (F-11)
+  app.use((err, req, res, next) => {
+    const status = err.status || err.statusCode || 500;
+    const message = err.expose || status < 500 ? err.message : 'Internal server error';
+    if (res.headersSent) return next(err);
+    res.status(status).json({ error: message });
   });
 
   return { app, server, storage, dispatcher, worker, mockEnabled, strictSSRF, instanceId };

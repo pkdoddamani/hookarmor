@@ -878,7 +878,7 @@ test('custom_headers: outbound dispatch includes configured destination headers'
   }
 });
 
-test('inbound sensitive headers (authorization, cookie, x-api-key) are redacted before storage', async () => {
+test('inbound sensitive headers (authorization, cookie, x-api-key) are delivered to target but redacted in API output', async () => {
   const target = await startTarget();
   const ha = await startHA();
   try {
@@ -887,18 +887,28 @@ test('inbound sensitive headers (authorization, cookie, x-api-key) are redacted 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer leaked-secret-token',
-        'Cookie': 'session=super-secret-cookie',
+        'Authorization': 'Bearer real-customer-token',
+        'Cookie': 'session=customer-cookie',
         'X-Api-Key': 'key-12345'
       },
       body: JSON.stringify({ event: 'ping' })
     });
     assert.strictEqual(res.status, 200);
     const body = await res.json();
-    const stored = ha.storage.getEvent(body.hookarmor_id);
-    assert.strictEqual(stored.headers['authorization'], '[REDACTED]');
-    assert.strictEqual(stored.headers['cookie'], '[REDACTED]');
-    assert.strictEqual(stored.headers['x-api-key'], '[REDACTED]');
+
+    // 1. Delivered downstream to target uncorrupted:
+    const delivered = await waitFor(() => target.requests[0]);
+    assert.ok(delivered, 'Target must receive request');
+    assert.strictEqual(delivered.headers['authorization'], 'Bearer real-customer-token');
+    assert.strictEqual(delivered.headers['cookie'], 'session=customer-cookie');
+    assert.strictEqual(delivered.headers['x-api-key'], 'key-12345');
+
+    // 2. Redacted in API output:
+    const apiRes = await fetch(`${ha.base}/api/events/${body.hookarmor_id}`);
+    const apiEvent = await apiRes.json();
+    assert.strictEqual(apiEvent.headers['authorization'], '[REDACTED]');
+    assert.strictEqual(apiEvent.headers['cookie'], '[REDACTED]');
+    assert.strictEqual(apiEvent.headers['x-api-key'], '[REDACTED]');
   } finally {
     await ha.close();
     target.close();
@@ -934,6 +944,159 @@ test('unsigned endpoint dedupe does not suppress conflicting payloads with the s
   }
 });
 
+test('F-00: dashboard index.html inline script parses without syntax errors', async () => {
+  const htmlPath = path.join(__dirname, '..', 'src', 'public', 'index.html');
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/i);
+  assert.ok(scriptMatch, 'index.html must contain an inline script block');
+  const scriptContent = scriptMatch[1];
+  assert.doesNotThrow(() => {
+    new Function(scriptContent);
+  }, 'Dashboard inline script must parse without syntax errors');
+});
+
+test('F-01: unverified events ingested without secret are not re-signed with real secret on replay', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    // Ingest without secret
+    ha.storage.createEndpoint({ id: 'ep_unverified', name: 'ep_unverified', targetUrl: target.url });
+    const payload = JSON.stringify({ id: 'evt_fake_checkout', type: 'checkout.session.completed' });
+    const res1 = await fetch(`${ha.base}/in/ep_unverified`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Stripe-Signature': 'fake_signature' },
+      body: payload
+    });
+    const body1 = await res1.json();
+    assert.strictEqual(res1.status, 200);
+    await waitFor(() => target.requests.length >= 1);
+
+    // Later: owner configures a real Stripe webhook secret
+    const realSecret = 'whsec_test_secret_12345';
+    ha.storage.createEndpoint({ id: 'ep_unverified', name: 'ep_unverified', targetUrl: target.url, secret: realSecret });
+
+    // Clear target requests and trigger manual replay
+    target.requests.length = 0;
+    const replayRes = await fetch(`${ha.base}/api/events/${body1.hookarmor_id}/replay`, { method: 'POST', headers: JSON_HEADERS });
+    assert.strictEqual(replayRes.status, 200);
+
+    const replayed = await waitFor(() => target.requests[0]);
+    assert.ok(replayed, 'Event should be delivered');
+    // It must NOT have been re-signed with the real secret
+    const sig = replayed.headers['stripe-signature'];
+    assert.strictEqual(sig, 'fake_signature', 'Unverified event must keep original header and not be laundered into valid signature');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('F-02: manual replay sets claimed_by and does not trigger duplicate delivery by recovery', async () => {
+  const target = await startTarget({ status: 200 });
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_replay', name: 'ep_replay', targetUrl: target.url });
+    const res = await fetch(`${ha.base}/in/ep_replay`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'evt_once' })
+    });
+    const { hookarmor_id } = await res.json();
+    await waitFor(() => target.requests.length >= 1);
+
+    // Claim event for replay via dispatcher
+    target.requests.length = 0;
+    const replayPromise = ha.dispatcher.replayEvent(hookarmor_id);
+
+    // Trigger recoverInterruptedDeliveries while replay is in progress/just claimed
+    const recovered = ha.storage.recoverInterruptedDeliveries();
+    assert.strictEqual(recovered, 0, 'In-flight manual replay with active instance claim must not be reclaimed as interrupted');
+
+    await replayPromise;
+    assert.strictEqual(target.requests.length, 1, 'Manual replay must result in exactly one delivery');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('F-03: endpoint configured with provider rejects payloads with mismatched signature schemes', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_stripe_only',
+      name: 'ep_stripe_only',
+      targetUrl: target.url,
+      provider: 'stripe',
+      secret: 'whsec_secret'
+    });
+
+    // Send github headers to stripe-pinned endpoint
+    const res = await fetch(`${ha.base}/in/ep_stripe_only`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Event': 'push',
+        'X-Hub-Signature-256': 'sha256=123'
+      },
+      body: JSON.stringify({ ref: 'main' })
+    });
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error.includes('Signature scheme mismatch'));
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('F-05: sensitive custom_headers are masked in public endpoint API', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_custom_h',
+      name: 'ep_custom_h',
+      targetUrl: 'http://127.0.0.1:9999/hook',
+      customHeaders: {
+        'X-Normal-Header': 'public-value',
+        'Authorization': 'Bearer secret-key-downstream',
+        'X-Api-Key': 'secret-downstream-api-key'
+      }
+    });
+
+    const res = await fetch(`${ha.base}/api/endpoints`);
+    const endpoints = await res.json();
+    const ep = endpoints.find(e => e.id === 'ep_custom_h');
+    assert.ok(ep);
+    assert.strictEqual(ep.custom_headers['X-Normal-Header'], 'public-value');
+    assert.strictEqual(ep.custom_headers['Authorization'], '••••••••');
+    assert.strictEqual(ep.custom_headers['X-Api-Key'], '••••••••');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('F-06: websocket rejects connection with untrusted Origin in local no-auth mode', async () => {
+  const ha = await startHA({ apiKey: null });
+  try {
+    const wsUrl = ha.base.replace(/^http/, 'ws') + '/ws';
+    const client = new WebSocket(wsUrl, {
+      headers: {
+        'Origin': 'https://malicious-attacker-website.com'
+      }
+    });
+
+    const result = await new Promise((resolve) => {
+      client.on('open', () => resolve('opened'));
+      client.on('error', () => resolve('rejected'));
+    });
+    assert.strictEqual(result, 'rejected', 'WebSocket handshake must be rejected for cross-site origin');
+  } finally {
+    await ha.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {
@@ -942,7 +1105,7 @@ test('unsigned endpoint dedupe does not suppress conflicting payloads with the s
       console.log(`  PASS  ${c.name}`);
     } catch (err) {
       failed++;
-      console.log(`  FAIL  ${c.name}\n        ${String(err.message).split('\n')[0]}`);
+      console.log(`  FAIL  ${c.name}\n        ${err.stack || err.message}`);
     }
   }
   console.log(`\n${cases.length - failed}/${cases.length} regression checks passed`);
