@@ -261,13 +261,16 @@ class Dispatcher extends EventEmitter {
 
     let headers = { ...event.headers };
 
-    // Never forward sender-supplied HookArmor headers or spoofable routing headers
-    for (const name of Object.keys(headers)) {
+    // Never forward sender-supplied HookArmor headers, spoofable routing headers,
+    // or literal redaction placeholders from legacy rows saved before 1.2.3
+    for (const [name, val] of Object.entries(headers)) {
       const lower = name.toLowerCase();
       if (
         lower.startsWith('x-hookarmor-') ||
         lower.startsWith('x-forwarded-') ||
-        STRIPPED_INBOUND_HEADERS.has(lower)
+        STRIPPED_INBOUND_HEADERS.has(lower) ||
+        val === '[REDACTED]' ||
+        val === '[ENCRYPTED]'
       ) {
         delete headers[name];
       }

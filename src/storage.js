@@ -242,6 +242,7 @@ class Storage {
       ? (typeof customHeaders === 'string' ? customHeaders : JSON.stringify(customHeaders || {}))
       : (existing ? JSON.stringify(existing.custom_headers || {}) : '{}');
     const encryptedSecret = encryptSecret(finalSecret, this.encryptionKey);
+    const encryptedHeaders = this.encryptionKey ? encryptSecret(finalHeaders, this.encryptionKey) : finalHeaders;
     this.db.prepare(`
       INSERT INTO endpoints (id, name, target_url, secret, provider, alert_webhook_url, auto_retry, max_retries, concurrency_limit, custom_headers)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -255,25 +256,41 @@ class Storage {
         max_retries = excluded.max_retries,
         concurrency_limit = excluded.concurrency_limit,
         custom_headers = excluded.custom_headers
-    `).run(id, name, targetUrl, encryptedSecret || '', finalProvider || null, finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5, finalHeaders);
+    `).run(id, name, targetUrl, encryptedSecret || '', finalProvider || null, finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5, encryptedHeaders);
     return this.getEndpoint(id);
+  }
+
+  _readCustomHeaders(stored) {
+    if (!stored) return {};
+    try {
+      const decrypted = decryptSecret(stored, this.encryptionKey);
+      return JSON.parse(decrypted || '{}');
+    } catch (_) {
+      try {
+        return JSON.parse(stored || '{}');
+      } catch (__) {
+        return {};
+      }
+    }
   }
 
   getEndpoint(id) {
     const row = this.db.prepare('SELECT * FROM endpoints WHERE id = ?').get(id);
     if (!row) return null;
-    let customHeaders = {};
-    try { customHeaders = JSON.parse(row.custom_headers || '{}'); } catch (_) {}
-    return { ...row, secret: decryptSecret(row.secret, this.encryptionKey), custom_headers: customHeaders };
+    return {
+      ...row,
+      secret: decryptSecret(row.secret, this.encryptionKey),
+      custom_headers: this._readCustomHeaders(row.custom_headers)
+    };
   }
 
   listEndpoints() {
     const rows = this.db.prepare('SELECT * FROM endpoints ORDER BY created_at DESC').all();
-    return rows.map((r) => {
-      let customHeaders = {};
-      try { customHeaders = JSON.parse(r.custom_headers || '{}'); } catch (_) {}
-      return { ...r, secret: decryptSecret(r.secret, this.encryptionKey), custom_headers: customHeaders };
-    });
+    return rows.map((r) => ({
+      ...r,
+      secret: decryptSecret(r.secret, this.encryptionKey),
+      custom_headers: this._readCustomHeaders(r.custom_headers)
+    }));
   }
 
   deleteEndpoint(id) {
@@ -554,21 +571,29 @@ class Storage {
     return this.db.prepare('DELETE FROM instances WHERE id = ?').run(instanceId).changes;
   }
 
-  // Fail-fast assertion: verify all configured endpoint secrets can be decrypted
+  // Fail-fast assertion: verify all configured endpoint secrets and custom headers can be decrypted
   assertSecretsReadable(allowUnreadable = false) {
-    const endpoints = this.db.prepare('SELECT id, secret FROM endpoints').all();
+    const endpoints = this.db.prepare('SELECT id, secret, custom_headers FROM endpoints').all();
     const unreadable = [];
     for (const ep of endpoints) {
-      if (!ep.secret) continue;
-      try {
-        decryptSecret(ep.secret, this.encryptionKey);
-      } catch (err) {
-        unreadable.push(ep.id);
+      if (ep.secret) {
+        try {
+          decryptSecret(ep.secret, this.encryptionKey);
+        } catch (err) {
+          unreadable.push(`${ep.id} (secret)`);
+        }
+      }
+      if (ep.custom_headers && typeof ep.custom_headers === 'string' && ep.custom_headers.startsWith('enc:v1:')) {
+        try {
+          decryptSecret(ep.custom_headers, this.encryptionKey);
+        } catch (err) {
+          unreadable.push(`${ep.id} (custom_headers)`);
+        }
       }
     }
     if (unreadable.length > 0 && !allowUnreadable) {
       throw new Error(
-        `Failed to decrypt signing secrets for endpoint(s): ${unreadable.join(', ')}. ` +
+        `Failed to decrypt signing secrets or custom headers for endpoint(s): ${unreadable.join(', ')}. ` +
         `HOOKARMOR_ENCRYPTION_KEY may be missing or invalid. ` +
         `Set HOOKARMOR_ALLOW_UNREADABLE_SECRETS=true to start anyway.`
       );

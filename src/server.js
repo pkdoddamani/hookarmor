@@ -108,7 +108,10 @@ function createServer(options = {}) {
   const maxBody = options.maxBodySize || process.env.HOOKARMOR_MAX_BODY || '10mb';
   const retentionDays = options.retentionDays !== undefined
     ? options.retentionDays
-    : clampInt(process.env.HOOKARMOR_RETENTION_DAYS, 0, 0, 3650);
+    : clampInt(process.env.HOOKARMOR_RETENTION_DAYS, 30, 0, 3650);
+  const maxPendingEvents = options.maxPendingEvents !== undefined
+    ? options.maxPendingEvents
+    : clampInt(process.env.HOOKARMOR_MAX_PENDING_EVENTS, 50000, 100, 1000000);
 
   if (isProduction && !apiKey && !allowNoAuth) {
     throw new Error(
@@ -215,13 +218,12 @@ function createServer(options = {}) {
       const isLoopbackRemote = !remote || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
       if (!isLoopbackRemote || !LOCAL_HOSTNAMES.has(hostnameOf(info.req.headers.host))) return false;
       const origin = info.origin || info.req.headers.origin;
-      if (origin) {
-        try {
-          const u = new URL(origin);
-          if (!LOCAL_HOSTNAMES.has(u.hostname)) return false;
-        } catch (_) {
-          return false;
-        }
+      if (!origin) return false;
+      try {
+        const u = new URL(origin);
+        if (!LOCAL_HOSTNAMES.has(u.hostname)) return false;
+      } catch (_) {
+        return false;
       }
       return true;
     }
@@ -277,9 +279,29 @@ function createServer(options = {}) {
     limit: clampInt(process.env.HOOKARMOR_INGRESS_RATE_LIMIT, 600, 1, 50000),
     windowMs: 60000
   });
-  const maxPendingEvents = clampInt(process.env.HOOKARMOR_MAX_PENDING_EVENTS, 50000, 100, 1000000);
+  const parseBytes = (val, defaultBytes = 10 * 1024 * 1024) => {
+    if (typeof val === 'number') return val;
+    if (typeof val !== 'string') return defaultBytes;
+    const match = val.match(/^(\d+(?:\.\d+)?)\s*(kb|mb|gb|b)?$/i);
+    if (!match) return defaultBytes;
+    const num = parseFloat(match[1]);
+    const unit = (match[2] || 'b').toLowerCase();
+    if (unit === 'gb') return Math.round(num * 1024 * 1024 * 1024);
+    if (unit === 'mb') return Math.round(num * 1024 * 1024);
+    if (unit === 'kb') return Math.round(num * 1024);
+    return Math.round(num);
+  };
+  const maxBodyBytes = parseBytes(maxBody, 10 * 1024 * 1024);
 
   const ingressPreflight = (req, res, next) => {
+    const cl = req.headers['content-length'];
+    if (cl) {
+      const len = parseInt(cl, 10);
+      if (Number.isFinite(len) && len > maxBodyBytes) {
+        res.setHeader('Connection', 'close');
+        return res.status(413).json({ error: 'Request body exceeds maximum allowed size' });
+      }
+    }
     if (!ingressLimiter(req.ip)) {
       res.setHeader('Connection', 'close');
       return res.status(429).json({ error: 'Too many ingress requests from this IP; rate limit exceeded' });
@@ -304,7 +326,7 @@ function createServer(options = {}) {
     const endpointId = endpoint.id;
 
     // Storage capacity backpressure protection per endpoint
-    if (storage.getPendingCount && storage.getPendingCount(endpointId) >= maxPendingEvents) {
+    if (storage.countPending && storage.countPending(endpointId) >= maxPendingEvents) {
       return res.status(503).json({ error: 'Ingress queue capacity reached. System is under high load; retry shortly.' });
     }
 
@@ -374,6 +396,13 @@ function createServer(options = {}) {
         });
       }
       verified = true;
+      // Auto-pin provider scheme on first verified event (closes F-03 scheme mix-up on unconfigured endpoints)
+      if (!endpoint.provider && provider && provider !== 'generic') {
+        try {
+          storage.db.prepare('UPDATE endpoints SET provider = ? WHERE id = ?').run(provider, endpoint.id);
+          endpoint.provider = provider;
+        } catch (_) {}
+      }
     } else {
       console.warn(`[Ingress Warning] Ingested webhook for endpoint '${endpoint.id}' without signature verification (no secret configured).`);
       headers['x-hookarmor-unverified'] = 'true';
@@ -813,6 +842,7 @@ function createServer(options = {}) {
 
   // Error handling middleware: prevent stack traces leaking and return clean JSON (F-11)
   app.use((err, req, res, next) => {
+    console.error('[SERVER ERROR]:', err);
     const status = err.status || err.statusCode || 500;
     const message = err.expose || status < 500 ? err.message : 'Internal server error';
     if (res.headersSent) return next(err);

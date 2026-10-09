@@ -85,6 +85,7 @@ program
         id: 'demo-stripe',
         name: 'Stripe Payments Demo',
         targetUrl: `http://localhost:${port}/mock/target`,
+        provider: 'stripe',
         alertWebhookUrl: '',
         autoRetry: 1,
         maxRetries: 5

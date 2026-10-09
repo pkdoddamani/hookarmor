@@ -1230,6 +1230,155 @@ test('Lease Expiry: recoverInterruptedDeliveries reclaims stalled replaying even
   }
 });
 
+test('legacy [REDACTED] headers from pre-1.2.3 rows are not forwarded downstream on replay', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_redacted_row', name: 'ep_redacted_row', targetUrl: target.url });
+    // Simulate legacy pre-1.2.3 stored event with literal [REDACTED] string
+    ha.storage.saveEvent({
+      id: 'evt_legacy_redacted',
+      endpointId: 'ep_redacted_row',
+      status: 'failed',
+      rawBody: '{"test":1}',
+      headers: {
+        'authorization': '[REDACTED]',
+        'cookie': '[REDACTED]',
+        'x-api-key': '[REDACTED]',
+        'content-type': 'application/json'
+      }
+    });
+
+    const replayRes = await fetch(`${ha.base}/api/events/evt_legacy_redacted/replay`, {
+      method: 'POST',
+      headers: JSON_HEADERS
+    });
+    assert.strictEqual(replayRes.status, 200);
+
+    const replayed = await waitFor(() => target.requests[0]);
+    assert.ok(replayed);
+    assert.strictEqual(replayed.headers['authorization'], undefined);
+    assert.strictEqual(replayed.headers['cookie'], undefined);
+    assert.strictEqual(replayed.headers['x-api-key'], undefined);
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('custom_headers are encrypted with AES-256-GCM at rest when key is set', async () => {
+  const encKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const ha = await startHA({ encryptionKey: encKey });
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_enc_custom',
+      name: 'ep_enc_custom',
+      targetUrl: 'https://example.com/webhook',
+      customHeaders: {
+        'Authorization': 'Bearer super-secret-token',
+        'X-Service-Key': 'my-custom-key'
+      }
+    });
+
+    // Check raw SQLite database row
+    const rawRow = ha.storage.db.prepare('SELECT custom_headers FROM endpoints WHERE id = ?').get('ep_enc_custom');
+    assert.ok(rawRow.custom_headers.startsWith('enc:v1:'), 'custom_headers in database must be AES-256-GCM encrypted');
+    assert.ok(!rawRow.custom_headers.includes('super-secret-token'), 'Plaintext secret must not appear in database row');
+
+    // Decryption via storage API
+    const ep = ha.storage.getEndpoint('ep_enc_custom');
+    assert.strictEqual(ep.custom_headers['Authorization'], 'Bearer super-secret-token');
+    assert.strictEqual(ep.custom_headers['X-Service-Key'], 'my-custom-key');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('websocket rejects connection with missing Origin in local no-auth mode', async () => {
+  const ha = await startHA({ apiKey: null });
+  try {
+    const wsUrl = ha.base.replace(/^http/, 'ws') + '/ws';
+    // Connect with NO Origin header
+    const client = new WebSocket(wsUrl);
+
+    const result = await new Promise((resolve) => {
+      client.on('open', () => resolve('opened'));
+      client.on('error', () => resolve('rejected'));
+    });
+    assert.strictEqual(result, 'rejected', 'WebSocket without Origin must be rejected in local no-auth mode');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('ingressPreflight rejects request exceeding maxBody early via Content-Length', async () => {
+  const ha = await startHA({ maxBodySize: '1kb' });
+  try {
+    ha.storage.createEndpoint({ id: 'ep_body_limit', name: 'ep_body_limit', targetUrl: 'http://127.0.0.1:9999/hook' });
+
+    const res = await fetch(`${ha.base}/in/ep_body_limit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': '2048' // 2KB > 1KB limit
+      },
+      body: 'x'.repeat(2048)
+    });
+    assert.strictEqual(res.status, 413, 'Oversized Content-Length must be rejected with 413');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('unpinned endpoint auto-pins provider on first verified webhook', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    const secret = 'whsec_auto_pin_secret_123';
+    // Endpoint created without an explicit provider
+    ha.storage.createEndpoint({ id: 'ep_unpinned', name: 'ep_unpinned', targetUrl: target.url, secret });
+    const epInitial = ha.storage.getEndpoint('ep_unpinned');
+    assert.strictEqual(epInitial.provider, null);
+
+    // Send valid Stripe webhook
+    const now = Math.floor(Date.now() / 1000);
+    const body = JSON.stringify({ id: 'evt_stripe_pin' });
+    const sig = crypto.createHmac('sha256', secret).update(`${now}.${body}`).digest('hex');
+
+    const res = await fetch(`${ha.base}/in/ep_unpinned`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': `t=${now},v1=${sig}`
+      },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+
+    // Endpoint must now be pinned to 'stripe' in database
+    const epPinned = ha.storage.getEndpoint('ep_unpinned');
+    assert.strictEqual(epPinned.provider, 'stripe', 'Endpoint must auto-pin to stripe');
+
+    // Attempt to send a Shopify webhook to this endpoint should now be rejected as mismatched scheme
+    const shopifyHmac = crypto.createHmac('sha256', secret).update(Buffer.from(body)).digest('base64');
+    const resMismatched = await fetch(`${ha.base}/in/ep_unpinned`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Hmac-Sha256': shopifyHmac,
+        'X-Shopify-Topic': 'orders/create'
+      },
+      body
+    });
+    assert.strictEqual(resMismatched.status, 400);
+    const bodyMismatched = await resMismatched.json();
+    assert.ok(bodyMismatched.error.includes('mismatch'));
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {
