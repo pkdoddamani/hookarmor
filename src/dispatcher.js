@@ -492,10 +492,24 @@ class Dispatcher extends EventEmitter {
     return this.dispatch(event, endpoint, { replay: true });
   }
 
-  // Claims every failed event (including ones that exhausted automatic retries) and delivers
+  // Claims every failed event (or specific ids if provided) and delivers
   // them in the background through the per-endpoint concurrency limiter.
-  replayAllFailed(endpointId = null, batchSize = 500) {
-    const failedEvents = this.storage.getFailedEventsForReplay(endpointId, batchSize);
+  replayAllFailed(endpointIdOrOpts = null, batchSizeArg = 500, idsArg = null) {
+    let endpointId = null;
+    let batchSize = 500;
+    let ids = null;
+
+    if (endpointIdOrOpts && typeof endpointIdOrOpts === 'object' && !Array.isArray(endpointIdOrOpts)) {
+      endpointId = endpointIdOrOpts.endpointId || null;
+      batchSize = typeof endpointIdOrOpts.batchSize === 'number' ? endpointIdOrOpts.batchSize : (typeof endpointIdOrOpts.limit === 'number' ? endpointIdOrOpts.limit : 500);
+      ids = Array.isArray(endpointIdOrOpts.ids) ? endpointIdOrOpts.ids : null;
+    } else {
+      endpointId = endpointIdOrOpts || null;
+      batchSize = typeof batchSizeArg === 'number' ? batchSizeArg : 500;
+      ids = Array.isArray(idsArg) ? idsArg : null;
+    }
+
+    const failedEvents = this.storage.getFailedEventsForReplay({ endpointId, limit: batchSize, ids });
     const claimed = [];
     for (const event of failedEvents) {
       const endpoint = this.storage.getEndpoint(event.endpoint_id);

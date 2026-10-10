@@ -1445,6 +1445,135 @@ test('CLI replay: -y confirms and dispatches replay in non-interactive mode', as
   }
 });
 
+test('N10: replay-all route honors { ids } array and only replays specified events', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_n10', name: 'N10 Target', targetUrl: target.url });
+    for (let i = 1; i <= 4; i++) {
+      ha.storage.saveEvent({
+        id: `evt_n10_${i}`,
+        endpointId: 'ep_n10',
+        provider: 'generic',
+        eventType: 'invoice.payment_failed',
+        headers: {},
+        rawBody: JSON.stringify({ index: i }),
+        status: 'failed'
+      });
+    }
+
+    // Request replay for only 2 specific IDs
+    const res = await fetch(`${ha.base}/api/events/replay-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['evt_n10_1', 'evt_n10_3'] })
+    });
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.replayedCount, 2, 'Must replay exactly 2 events');
+    assert.deepStrictEqual(data.eventIds.sort(), ['evt_n10_1', 'evt_n10_3']);
+
+    // Wait for async dispatch to complete
+    await sleep(250);
+    assert.strictEqual(target.requests.length, 2, 'Target must receive exactly 2 requests');
+
+    // Remaining events must still be in failed status
+    assert.strictEqual(ha.storage.getEvent('evt_n10_2').status, 'failed');
+    assert.strictEqual(ha.storage.getEvent('evt_n10_4').status, 'failed');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('N10: CLI replay --failed bounds replay to previewed IDs and respects --limit', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_n10_cli', name: 'N10 CLI Target', targetUrl: target.url });
+    for (let i = 1; i <= 3; i++) {
+      ha.storage.saveEvent({
+        id: `evt_n10_cli_${i}`,
+        endpointId: 'ep_n10_cli',
+        provider: 'generic',
+        eventType: 'order.failed',
+        headers: {},
+        rawBody: JSON.stringify({ item: i }),
+        status: 'failed'
+      });
+    }
+
+    const { execFile } = require('child_process');
+    const out = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['bin/hookarmor.js', 'replay', '--failed', '--limit', '2', '-u', ha.base, '-y'], (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+
+    assert.ok(out.includes('Total in batch: 2 event(s)'), 'Must preview only 2 events');
+    assert.ok(out.includes('Dispatched replay for 2 events'), 'Must dispatch only 2 events');
+    assert.ok(out.includes('1 failed events still remaining in DLQ'), 'Must report remaining 1 failed event');
+
+    await sleep(250);
+    assert.strictEqual(target.requests.length, 2, 'Target must receive exactly 2 requests, not all 3');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('CLI replay: payload preview redacts PII by default and unmasks with --show-payload', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_pii', name: 'PII Target', targetUrl: target.url });
+    ha.storage.saveEvent({
+      id: 'evt_pii_1',
+      endpointId: 'ep_pii',
+      provider: 'generic',
+      eventType: 'customer.subscription.created',
+      headers: {},
+      rawBody: JSON.stringify({
+        email: 'secret_user@example.com',
+        card: { last4: '4242' },
+        token: 'tok_live_abc123'
+      }),
+      status: 'failed'
+    });
+
+    const { execFile } = require('child_process');
+    // Default dry-run must redact sensitive fields
+    const redactedOut = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['bin/hookarmor.js', 'replay', 'evt_pii_1', '-u', ha.base, '--dry-run'], (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+
+    assert.ok(redactedOut.includes('sensitive PII redacted'), 'Must notify user of redaction');
+    assert.ok(!redactedOut.includes('secret_user@example.com'), 'Must not contain plaintext email');
+    assert.ok(!redactedOut.includes('tok_live_abc123'), 'Must not contain plaintext token');
+    assert.ok(!redactedOut.includes('"last4": "4242"'), 'Must not contain plaintext last4');
+    assert.ok(redactedOut.includes('[REDACTED]'), 'Must contain [REDACTED]');
+
+    // With --show-payload, raw values must be visible
+    const unredactedOut = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['bin/hookarmor.js', 'replay', 'evt_pii_1', '-u', ha.base, '--dry-run', '--show-payload'], (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+
+    assert.ok(unredactedOut.includes('secret_user@example.com'), 'Must reveal email with --show-payload');
+    assert.ok(unredactedOut.includes('tok_live_abc123'), 'Must reveal token with --show-payload');
+    assert.ok(unredactedOut.includes('4242'), 'Must reveal last4 with --show-payload');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

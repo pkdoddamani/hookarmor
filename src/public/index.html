@@ -1072,8 +1072,20 @@
     }
 
     async function replayAllFailed() {
-      if (!confirm('Replay all failed Dead-Letter Queue events now?')) return;
       try {
+        const statsRes = await fetch('/api/stats', { headers: getAuthHeaders() });
+        const stats = statsRes.ok ? await statsRes.json() : null;
+        const failedCount = stats && typeof stats.failed === 'number' ? stats.failed : null;
+
+        if (failedCount === 0) {
+          alert('No failed dead-letter events found in the queue.');
+          return;
+        }
+
+        const countMsg = failedCount !== null ? `all ${failedCount} failed dead-letter event(s)` : 'all failed Dead-Letter Queue events';
+        const warning = `⚠️ WARNING: Bulk Replay Confirmation\n\nAre you sure you want to replay ${countMsg} in the database now?\n\nThis will dispatch outbound HTTP POST requests to your destination endpoints and may trigger customer billing actions, order fulfillments, or downstream email notifications.\n\nProceed with bulk replay?`;
+        if (!confirm(warning)) return;
+
         const res = await fetch('/api/events/replay-all', { method: 'POST', headers: getAuthHeaders({ 'Content-Type': 'application/json' }), body: '{}' });
         const data = await res.json();
         if (!res.ok) {

@@ -20,6 +20,39 @@ function askConfirmation(question) {
   });
 }
 
+function redactPayload(bodyStr) {
+  try {
+    const obj = JSON.parse(bodyStr);
+    const SENSITIVE_KEYS = new Set([
+      'email', 'customer_email', 'receipt_email', 'billing_email',
+      'password', 'token', 'secret', 'api_key', 'apikey', 'access_token',
+      'authorization', 'card', 'last4', 'number', 'cvc', 'cvv', 'exp_month', 'exp_year',
+      'phone', 'phone_number', 'ssn', 'tax_id', 'client_secret'
+    ]);
+    function maskVal(val) {
+      if (!val || typeof val !== 'object') return val;
+      if (Array.isArray(val)) return val.map(maskVal);
+      const copy = {};
+      for (const [k, v] of Object.entries(val)) {
+        const lower = k.toLowerCase();
+        if (SENSITIVE_KEYS.has(lower) || lower.includes('secret') || lower.includes('password') || lower.includes('token')) {
+          copy[k] = typeof v === 'string' && v.includes('@') ? v.replace(/^(.)(.*)(@.*)$/, '$1***$3') : '[REDACTED]';
+        } else if (typeof v === 'object') {
+          copy[k] = maskVal(v);
+        } else {
+          copy[k] = v;
+        }
+      }
+      return copy;
+    }
+    return JSON.stringify(maskVal(obj), null, 2);
+  } catch (_) {
+    return String(bodyStr)
+      .replace(/[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g, '[REDACTED_EMAIL]')
+      .replace(/(["']?(?:password|token|secret|key|last4)["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, '$1[REDACTED]');
+  }
+}
+
 const program = new Command();
 
 program
@@ -169,19 +202,24 @@ program
   .description('Replay dead-letter events from terminal with payload preview and confirmation')
   .argument('[eventId]', 'Specific event ID to replay')
   .option('--failed', 'Replay all failed events (including ones that used up their automatic retries)')
+  .option('-l, --limit <n>', 'Maximum number of failed events to preview and replay (default: 100)', '100')
   .option('-y, --yes', 'Skip confirmation prompt and execute replay immediately')
   .option('--dry-run', 'Preview event details and target destination without executing')
+  .option('--show-payload', 'Display unredacted raw payload in preview (default is to redact PII/secrets)')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
   .option('-k, --api-key <key>', 'Admin API key (default: HOOKARMOR_API_KEY)', process.env.HOOKARMOR_API_KEY)
   .action(async (eventId, options) => {
     const baseUrl = options.url.replace(/\/$/, '');
     try {
       if (options.failed) {
-        // Fetch failed events and endpoints for summary preview
-        const [eventsRes, endpointsRes] = await Promise.all([
-          fetch(`${baseUrl}/api/events?status=failed&limit=100`, { headers: apiHeaders(options.apiKey) }),
+        const limit = Math.max(1, parseInt(options.limit, 10) || 100);
+        // Fetch stats, failed events (capped at limit), and endpoints for summary preview
+        const [statsRes, eventsRes, endpointsRes] = await Promise.all([
+          fetch(`${baseUrl}/api/stats`, { headers: apiHeaders(options.apiKey) }),
+          fetch(`${baseUrl}/api/events?status=failed&limit=${limit}`, { headers: apiHeaders(options.apiKey) }),
           fetch(`${baseUrl}/api/endpoints`, { headers: apiHeaders(options.apiKey) })
         ]);
+        const stats = await readJson(statsRes).catch(() => ({}));
         const failedEvents = await readJson(eventsRes);
         const endpoints = await readJson(endpointsRes);
         const epMap = new Map((Array.isArray(endpoints) ? endpoints : []).map(e => [e.id, e]));
@@ -191,6 +229,7 @@ program
           return;
         }
 
+        const totalFailed = (stats && typeof stats.failed === 'number') ? stats.failed : failedEvents.length;
         const byEndpoint = new Map();
         for (const ev of failedEvents) {
           const list = byEndpoint.get(ev.endpoint_id) || [];
@@ -200,14 +239,19 @@ program
 
         console.log(chalk.blue.bold('\n🔍 Bulk Replay Summary'));
         console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-        console.log(`Found ${chalk.red.bold(failedEvents.length)} failed dead-letter event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s):\n`);
+        if (totalFailed > failedEvents.length) {
+          console.log(`Found ${chalk.red.bold(totalFailed)} total failed event(s) in DLQ.`);
+          console.log(`Previewing next ${chalk.yellow.bold(failedEvents.length)} event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s) (pass --limit ${totalFailed} to select all):\n`);
+        } else {
+          console.log(`Found ${chalk.red.bold(failedEvents.length)} failed dead-letter event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s):\n`);
+        }
 
         for (const [epId, evs] of byEndpoint) {
           const ep = epMap.get(epId);
           const name = ep ? ep.name : epId;
           const url = ep ? ep.target_url : 'Unknown target';
           console.log(`  • ${chalk.white.bold(name)} (${chalk.cyan(epId)}) ➔ ${chalk.green(url)}`);
-          console.log(`    Total: ${chalk.yellow(evs.length)} event(s)`);
+          console.log(`    Total in batch: ${chalk.yellow(evs.length)} event(s)`);
           const typeCounts = new Map();
           for (const ev of evs) {
             const t = ev.event_type || 'Unknown';
@@ -220,12 +264,12 @@ program
         console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
 
         if (options.dryRun) {
-          console.log(chalk.cyan('ℹ Dry-run mode: bulk replay summary previewed without sending requests.\n'));
+          console.log(chalk.cyan(`ℹ Dry-run mode: bulk replay summary for ${failedEvents.length} event(s) previewed without sending requests.\n`));
           return;
         }
 
         console.log(chalk.yellow('⚠️  WARNING: Bulk replay will dispatch outbound HTTP POST requests'));
-        console.log(chalk.yellow('    for all listed events. This may trigger multiple billing actions,'));
+        console.log(chalk.yellow(`    for all ${failedEvents.length} previewed events. This may trigger multiple billing actions,`));
         console.log(chalk.yellow('    emails, or heavy load on your downstream servers.\n'));
 
         if (!options.yes) {
@@ -234,19 +278,24 @@ program
             process.exitCode = 1;
             return;
           }
-          const confirmed = await askConfirmation(chalk.bold(`? Proceed with bulk replay of ${failedEvents.length} event(s)? (y/N) `));
+          const confirmed = await askConfirmation(chalk.bold(`? Proceed with bulk replay of ${failedEvents.length} previewed event(s)? (y/N) `));
           if (!confirmed) {
             console.log(chalk.gray('✖ Bulk replay cancelled. No requests were sent.\n'));
             return;
           }
         }
 
-        console.log(chalk.yellow('\n🔄 Replaying all dead-letter events...'));
-        const res = await fetch(`${baseUrl}/api/events/replay-all`, { method: 'POST', headers: apiHeaders(options.apiKey), body: '{}' });
+        console.log(chalk.yellow(`\n🔄 Replaying ${failedEvents.length} dead-letter events...`));
+        // Pass the exact previewed event IDs to replay-all to ensure strict 1:1 execution
+        const res = await fetch(`${baseUrl}/api/events/replay-all`, {
+          method: 'POST',
+          headers: apiHeaders(options.apiKey, { 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ ids: failedEvents.map(e => e.id) })
+        });
         const data = await readJson(res);
         console.log(chalk.green(`✅ Dispatched replay for ${data.replayedCount} events.`));
         if (data.remaining > 0) {
-          console.log(chalk.yellow(`   ${data.remaining} failed events still queued; run the command again to continue.\n`));
+          console.log(chalk.yellow(`   ${data.remaining} failed events still remaining in DLQ; run again or use --limit to continue.\n`));
         } else {
           console.log('');
         }
@@ -273,11 +322,16 @@ program
         console.log(`Target URL   : ${chalk.green.bold(targetUrl)}`);
 
         if (event.raw_body) {
-          console.log(chalk.gray('\nPayload Preview:'));
+          const isRedacted = !options.showPayload;
+          console.log(chalk.gray(`\nPayload Preview${isRedacted ? ' (sensitive PII redacted; pass --show-payload to view raw)' : ''}:`));
           let snippet = event.raw_body;
-          try {
-            snippet = JSON.stringify(JSON.parse(event.raw_body), null, 2);
-          } catch (_) {}
+          if (isRedacted) {
+            snippet = redactPayload(event.raw_body);
+          } else {
+            try {
+              snippet = JSON.stringify(JSON.parse(event.raw_body), null, 2);
+            } catch (_) {}
+          }
           const lines = snippet.split('\n');
           if (lines.length > 12) {
             console.log(chalk.gray(lines.slice(0, 12).map(l => '  ' + l).join('\n') + `\n  ... (+${lines.length - 12} more lines)`));

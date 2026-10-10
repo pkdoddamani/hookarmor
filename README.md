@@ -3,8 +3,8 @@
 > **Durable at-least-once Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-71%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
-[![Release: v1.2.5](https://img.shields.io/badge/Release-v1.2.5-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.2.5)
+[![Tests: Passing](https://img.shields.io/badge/Tests-74%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
+[![Release: v1.2.6](https://img.shields.io/badge/Release-v1.2.6-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.2.6)
 [![npm version](https://img.shields.io/npm/v/hookarmor.svg?color=cb3837)](https://www.npmjs.com/package/hookarmor)
 
 ---
@@ -98,11 +98,14 @@ npx hookarmor listen http://localhost:3000/api/webhooks/stripe
 Replaying a webhook is a state-changing operation that can trigger billing or email side-effects downstream. HookArmor safely shows you the event details and destination URL before prompting for confirmation:
 
 ```bash
-# Preview event details and target URL, with confirmation prompt (y/N)
+# Preview event details and target URL (sensitive PII redacted), with confirmation prompt (y/N)
 npx hookarmor replay evt_1758513516086_m8r0e7
 
-# Preview failed events grouped by destination before firing
-npx hookarmor replay --failed --api-key "$HOOKARMOR_API_KEY"
+# Display unredacted raw payload in terminal preview
+npx hookarmor replay evt_1758513516086_m8r0e7 --show-payload
+
+# Preview failed events (strictly bounded to batch size) before firing
+npx hookarmor replay --failed --limit 50 --api-key "$HOOKARMOR_API_KEY"
 
 # Dry-run: inspect event payload & destination without sending network requests
 npx hookarmor replay evt_1758513516086_m8r0e7 --dry-run
@@ -115,7 +118,7 @@ npx hookarmor replay evt_1758513516086_m8r0e7 -y
 
 ## 📊 Verification Test Suite
 
-HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 63-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**71 tests total**):
+HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 66-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**74 tests total**):
 ```bash
 npm test
 ```

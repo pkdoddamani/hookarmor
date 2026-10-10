@@ -440,12 +440,31 @@ class Storage {
   }
 
   // Manual "replay all": every failed event, including ones that exhausted automatic retries
-  getFailedEventsForReplay(endpointId = null, limit = 500) {
+  getFailedEventsForReplay(endpointIdOrOpts = null, limitArg = 500, idsArg = null) {
+    let endpointId = null;
+    let limit = 500;
+    let ids = null;
+
+    if (endpointIdOrOpts && typeof endpointIdOrOpts === 'object' && !Array.isArray(endpointIdOrOpts)) {
+      endpointId = endpointIdOrOpts.endpointId || null;
+      limit = typeof endpointIdOrOpts.limit === 'number' ? endpointIdOrOpts.limit : 500;
+      ids = Array.isArray(endpointIdOrOpts.ids) ? endpointIdOrOpts.ids : null;
+    } else {
+      endpointId = endpointIdOrOpts || null;
+      limit = typeof limitArg === 'number' ? limitArg : 500;
+      ids = Array.isArray(idsArg) ? idsArg : null;
+    }
+
     let sql = "SELECT * FROM events WHERE status = 'failed'";
     const params = [];
     if (endpointId) {
       sql += ' AND endpoint_id = ?';
       params.push(endpointId);
+    }
+    if (ids && ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(',');
+      sql += ` AND id IN (${placeholders})`;
+      params.push(...ids);
     }
     sql += ' ORDER BY created_at ASC LIMIT ?';
     params.push(limit);

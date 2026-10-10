@@ -656,12 +656,19 @@ function createServer(options = {}) {
     }
   });
 
-  // Replay all failed events, including ones that exhausted automatic retries.
+  // Replay failed events (optionally filtered by endpointId, specific ids, and limit).
   // Returns immediately; deliveries run in the background through the concurrency limiter.
   app.post('/api/events/replay-all', (req, res) => {
     try {
-      const { endpointId } = req.body || {};
-      const result = dispatcher.replayAllFailed(typeof endpointId === 'string' ? endpointId : null);
+      const { endpointId, ids, limit } = req.body || {};
+      const cleanEndpointId = typeof endpointId === 'string' ? endpointId : null;
+      const cleanIds = Array.isArray(ids) ? ids.filter(id => typeof id === 'string' && id.trim().length > 0) : null;
+      const cleanLimit = typeof limit === 'number' && limit > 0 ? clampInt(limit, 500, 1, 5000) : 500;
+      const result = dispatcher.replayAllFailed({
+        endpointId: cleanEndpointId,
+        ids: cleanIds,
+        batchSize: cleanLimit
+      });
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
