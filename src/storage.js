@@ -414,7 +414,7 @@ class Storage {
       params.push(status);
     }
     sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(Math.min(Math.max(limit, 1), 500), Math.max(offset, 0));
+    params.push(Math.min(Math.max(limit, 1), 5000), Math.max(offset, 0));
 
     const rows = this.db.prepare(sql).all(...params);
     return rows.map(r => ({

@@ -3,8 +3,8 @@
 > **Durable at-least-once Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-74%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
-[![Release: v1.2.6](https://img.shields.io/badge/Release-v1.2.6-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.2.6)
+[![Tests: Passing](https://img.shields.io/badge/Tests-75%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
+[![Release: v1.2.7](https://img.shields.io/badge/Release-v1.2.7-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.2.7)
 [![npm version](https://img.shields.io/npm/v/hookarmor.svg?color=cb3837)](https://www.npmjs.com/package/hookarmor)
 
 ---
@@ -118,7 +118,7 @@ npx hookarmor replay evt_1758513516086_m8r0e7 -y
 
 ## 📊 Verification Test Suite
 
-HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 66-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**74 tests total**):
+HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 67-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**75 tests total**):
 ```bash
 npm test
 ```

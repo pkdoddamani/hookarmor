@@ -240,8 +240,9 @@ program
         console.log(chalk.blue.bold('\n🔍 Bulk Replay Summary'));
         console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
         if (totalFailed > failedEvents.length) {
+          const nextTarget = Math.min(totalFailed, 5000);
           console.log(`Found ${chalk.red.bold(totalFailed)} total failed event(s) in DLQ.`);
-          console.log(`Previewing next ${chalk.yellow.bold(failedEvents.length)} event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s) (pass --limit ${totalFailed} to select all):\n`);
+          console.log(`Previewing next ${chalk.yellow.bold(failedEvents.length)} event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s) (pass --limit ${nextTarget} to select all):\n`);
         } else {
           console.log(`Found ${chalk.red.bold(failedEvents.length)} failed dead-letter event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s):\n`);
         }

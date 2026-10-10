@@ -615,7 +615,7 @@ function createServer(options = {}) {
     const events = storage.listEvents({
       endpointId: typeof endpointId === 'string' ? endpointId : null,
       status: typeof status === 'string' ? status : null,
-      limit: clampInt(limit, 50, 1, 500),
+      limit: clampInt(limit, 50, 1, 5000),
       offset: clampInt(offset, 0, 0, Number.MAX_SAFE_INTEGER)
     });
     res.json(events.map(e => ({

@@ -1574,6 +1574,30 @@ test('CLI replay: payload preview redacts PII by default and unmasks with --show
   }
 });
 
+test('N11: /api/events honors limits exceeding 500 up to 5000 ceiling', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_n11', name: 'N11 Target', targetUrl: 'http://127.0.0.1:9999/hook' });
+    const insert = ha.storage.db.prepare(`
+      INSERT INTO events (id, endpoint_id, provider, event_type, headers, raw_body, status, created_at)
+      VALUES (?, 'ep_n11', 'generic', 'test', '{}', '{}', 'failed', '2026-10-10 12:00:00')
+    `);
+    const tx = ha.storage.db.transaction(() => {
+      for (let i = 1; i <= 600; i++) {
+        insert.run(`evt_n11_${i}`);
+      }
+    });
+    tx();
+
+    const res = await fetch(`${ha.base}/api/events?limit=600`);
+    assert.strictEqual(res.status, 200);
+    const events = await res.json();
+    assert.strictEqual(events.length, 600, 'Must return all 600 events without being clamped to 500');
+  } finally {
+    await ha.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {
