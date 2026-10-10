@@ -428,13 +428,12 @@ class Dispatcher extends EventEmitter {
                 ? recordResult._endpointStreak.prevAlertLevel
                 : 0;
 
-              // Only dispatch alert when risk level escalates (prevents alert fatigue)
-              if (risk.numericLevel > prevLevel) {
+              // Atomically claim alert escalation (prevents alert duplicate races under concurrency)
+              if (risk.numericLevel > prevLevel && this.storage.claimAlertLevelEscalation(currentEndpoint.id, risk.numericLevel)) {
                 await Alerter.sendDisablementAlert(alertUrl, {
                   endpoint: currentEndpoint,
                   risk
                 }, { strictSSRF: this.strictSSRF });
-                this.storage.updateEndpointAlertLevel(currentEndpoint.id, risk.numericLevel);
               }
             }
           } catch (sentinelErr) {

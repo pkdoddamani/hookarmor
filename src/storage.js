@@ -321,6 +321,15 @@ class Storage {
     this.db.prepare('UPDATE endpoints SET last_alerted_level = ? WHERE id = ?').run(level, id);
   }
 
+  claimAlertLevelEscalation(id, targetLevel) {
+    const res = this.db.prepare(`
+      UPDATE endpoints
+      SET last_alerted_level = ?
+      WHERE id = ? AND (last_alerted_level IS NULL OR last_alerted_level < ?)
+    `).run(targetLevel, id, targetLevel);
+    return res.changes > 0;
+  }
+
   resetEndpointStreak(id) {
     this.db.prepare(`
       UPDATE endpoints

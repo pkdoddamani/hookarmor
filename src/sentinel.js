@@ -31,7 +31,19 @@ function assessDisablementRisk(endpoint) {
   const now = Date.now();
   let streakHours = 0;
   if (streakStartedAt) {
-    const startedMs = new Date(streakStartedAt.includes('T') ? (streakStartedAt.endsWith('Z') ? streakStartedAt : `${streakStartedAt}Z`) : `${streakStartedAt.replace(' ', 'T')}Z`).getTime();
+    let startedMs = NaN;
+    if (typeof streakStartedAt === 'number') {
+      startedMs = streakStartedAt;
+    } else if (streakStartedAt instanceof Date) {
+      startedMs = streakStartedAt.getTime();
+    } else if (typeof streakStartedAt === 'string') {
+      const s = streakStartedAt.trim();
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s)) {
+        startedMs = new Date(`${s.replace(' ', 'T')}Z`).getTime();
+      } else {
+        startedMs = new Date(s).getTime();
+      }
+    }
     if (!isNaN(startedMs)) {
       streakHours = Math.max(0, Math.floor((now - startedMs) / (1000 * 60 * 60)));
     }

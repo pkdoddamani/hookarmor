@@ -1798,6 +1798,68 @@ test('Sentinel: CLI status displays disablement warnings when failure streak is 
   }
 });
 
+test('Sentinel N12: timestamp and timezone offsets are parsed without NaN or resetting streak', async () => {
+  const { assessDisablementRisk } = require('../src/sentinel');
+  const now = Date.now();
+  const pastMs = now - 5 * 3600 * 1000; // 5 hours ago
+
+  // 1. Numeric timestamp
+  const riskNum = assessDisablementRisk({
+    provider: 'razorpay',
+    consecutive_failures: 5,
+    streak_started_at: pastMs
+  });
+  assert.strictEqual(riskNum.streakHours, 5);
+
+  // 2. ISO timestamp with offset or UTC
+  const d = new Date(pastMs);
+  const isoUtc = d.toISOString();
+  const riskIso = assessDisablementRisk({
+    provider: 'razorpay',
+    consecutive_failures: 5,
+    streak_started_at: isoUtc
+  });
+  assert.strictEqual(riskIso.streakHours, 5);
+
+  // 3. SQLite datetime string 'YYYY-MM-DD HH:MM:SS'
+  const sqliteStr = isoUtc.replace('T', ' ').substring(0, 19);
+  const riskSqlite = assessDisablementRisk({
+    provider: 'razorpay',
+    consecutive_failures: 5,
+    streak_started_at: sqliteStr
+  });
+  assert.strictEqual(riskSqlite.streakHours, 5);
+});
+
+test('Sentinel N13: claimAlertLevelEscalation enforces atomic CAS against concurrent alert races', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_cas_test',
+      name: 'CAS Test',
+      targetUrl: 'http://127.0.0.1:9999/hook',
+      provider: 'shopify'
+    });
+    // First claim of level 1 should succeed
+    const firstClaim = ha.storage.claimAlertLevelEscalation('ep_cas_test', 1);
+    assert.strictEqual(firstClaim, true);
+
+    // Second claim of level 1 should fail
+    const duplicateClaim = ha.storage.claimAlertLevelEscalation('ep_cas_test', 1);
+    assert.strictEqual(duplicateClaim, false);
+
+    // Claim of higher level (2) should succeed
+    const higherClaim = ha.storage.claimAlertLevelEscalation('ep_cas_test', 2);
+    assert.strictEqual(higherClaim, true);
+
+    // Claim of lower level (1) should fail
+    const lowerClaim = ha.storage.claimAlertLevelEscalation('ep_cas_test', 1);
+    assert.strictEqual(lowerClaim, false);
+  } finally {
+    await ha.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {
