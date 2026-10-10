@@ -3,8 +3,8 @@
 > **Durable at-least-once Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-75%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
-[![Release: v1.2.7](https://img.shields.io/badge/Release-v1.2.7-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.2.7)
+[![Tests: Passing](https://img.shields.io/badge/Tests-80%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
+[![Release: v1.3.0](https://img.shields.io/badge/Release-v1.3.0-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.3.0)
 [![npm version](https://img.shields.io/npm/v/hookarmor.svg?color=cb3837)](https://www.npmjs.com/package/hookarmor)
 
 ---
@@ -53,8 +53,9 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 2. **Cryptographic Header & Signature Preservation**: Forwards exact raw bytes, `stripe-signature`, `x-shopify-hmac-sha256`, and timestamps.
 3. **Dead-Letter Queue (DLQ)**: If your server returns 500, 502, 504, 429, or times out, HookArmor safely preserves the raw event with full error diagnostics.
 4. **Instant Alerts**: Sends immediate Slack / Discord webhooks when an endpoint begins failing.
-5. **1-Click Bulk Replay**: As soon as you push your code fix, hit **Replay All Dead-Letter** in the Web UI or run `hookarmor replay --failed` to re-deliver customer transactions.
-6. **Local Dev Relay**: `hookarmor listen http://localhost:3000/api/webhooks` to proxy webhooks straight into local dev servers with automatic re-signing.
+5. **Webhook Disablement Sentinel**: Actively tracks consecutive delivery failure streaks per provider (Shopify 19-failure deletion cutoff, Razorpay 24h auto-disable cutoff) and dispatches tiered warnings before upstream subscriptions are cancelled or deleted, with automatic recovery notifications when restored.
+6. **1-Click Bulk Replay**: As soon as you push your code fix, hit **Replay All Dead-Letter** in the Web UI or run `hookarmor replay --failed` to re-deliver customer transactions.
+7. **Local Dev Relay**: `hookarmor listen http://localhost:3000/api/webhooks` to proxy webhooks straight into local dev servers with automatic re-signing.
 
 ---
 

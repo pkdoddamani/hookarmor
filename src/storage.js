@@ -146,6 +146,10 @@ class Storage {
         auto_retry INTEGER DEFAULT 1,
         max_retries INTEGER DEFAULT 5,
         concurrency_limit INTEGER DEFAULT 5,
+        consecutive_failures INTEGER DEFAULT 0,
+        streak_started_at TEXT,
+        last_failure_at TEXT,
+        last_alerted_level INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -223,6 +227,18 @@ class Storage {
     if (!epColumns.includes('custom_headers')) {
       this.db.exec("ALTER TABLE endpoints ADD COLUMN custom_headers TEXT DEFAULT '{}'");
     }
+    if (!epColumns.includes('consecutive_failures')) {
+      this.db.exec("ALTER TABLE endpoints ADD COLUMN consecutive_failures INTEGER DEFAULT 0");
+    }
+    if (!epColumns.includes('streak_started_at')) {
+      this.db.exec("ALTER TABLE endpoints ADD COLUMN streak_started_at TEXT");
+    }
+    if (!epColumns.includes('last_failure_at')) {
+      this.db.exec("ALTER TABLE endpoints ADD COLUMN last_failure_at TEXT");
+    }
+    if (!epColumns.includes('last_alerted_level')) {
+      this.db.exec("ALTER TABLE endpoints ADD COLUMN last_alerted_level INTEGER DEFAULT 0");
+    }
 
     try {
       this.db.exec(`
@@ -280,7 +296,11 @@ class Storage {
     return {
       ...row,
       secret: decryptSecret(row.secret, this.encryptionKey),
-      custom_headers: this._readCustomHeaders(row.custom_headers)
+      custom_headers: this._readCustomHeaders(row.custom_headers),
+      consecutive_failures: row.consecutive_failures || 0,
+      last_alerted_level: row.last_alerted_level || 0,
+      streak_started_at: row.streak_started_at || null,
+      last_failure_at: row.last_failure_at || null
     };
   }
 
@@ -289,8 +309,27 @@ class Storage {
     return rows.map((r) => ({
       ...r,
       secret: decryptSecret(r.secret, this.encryptionKey),
-      custom_headers: this._readCustomHeaders(r.custom_headers)
+      custom_headers: this._readCustomHeaders(r.custom_headers),
+      consecutive_failures: r.consecutive_failures || 0,
+      last_alerted_level: r.last_alerted_level || 0,
+      streak_started_at: r.streak_started_at || null,
+      last_failure_at: r.last_failure_at || null
     }));
+  }
+
+  updateEndpointAlertLevel(id, level) {
+    this.db.prepare('UPDATE endpoints SET last_alerted_level = ? WHERE id = ?').run(level, id);
+  }
+
+  resetEndpointStreak(id) {
+    this.db.prepare(`
+      UPDATE endpoints
+      SET consecutive_failures = 0,
+          streak_started_at = NULL,
+          last_failure_at = NULL,
+          last_alerted_level = 0
+      WHERE id = ?
+    `).run(id);
   }
 
   deleteEndpoint(id) {
@@ -370,12 +409,56 @@ class Storage {
       WHERE id = ?
     `);
 
+    let endpointStreak = null;
+
     this.db.transaction(() => {
       insertAttempt.run(eventId, statusCode, responseBody.slice(0, 4000), errorMessage.slice(0, 1000), latencyMs);
       updateEvent.run(newStatus, statusCode, errorMessage || (isSuccess ? null : `HTTP ${statusCode}`), latencyMs, nextRetryAt, eventId);
+
+      const ev = this.db.prepare('SELECT endpoint_id FROM events WHERE id = ?').get(eventId);
+      if (ev && ev.endpoint_id) {
+        const ep = this.db.prepare('SELECT id, consecutive_failures, last_alerted_level FROM endpoints WHERE id = ?').get(ev.endpoint_id);
+        if (ep) {
+          const prevAlertLevel = ep.last_alerted_level || 0;
+          if (isSuccess) {
+            this.db.prepare(`
+              UPDATE endpoints
+              SET consecutive_failures = 0,
+                  streak_started_at = NULL,
+                  last_alerted_level = 0
+              WHERE id = ?
+            `).run(ev.endpoint_id);
+            endpointStreak = {
+              endpointId: ev.endpoint_id,
+              prevAlertLevel,
+              consecutiveFailures: 0,
+              recovered: prevAlertLevel > 0
+            };
+          } else {
+            this.db.prepare(`
+              UPDATE endpoints
+              SET consecutive_failures = consecutive_failures + 1,
+                  streak_started_at = COALESCE(streak_started_at, datetime('now')),
+                  last_failure_at = datetime('now')
+              WHERE id = ?
+            `).run(ev.endpoint_id);
+            const updatedEp = this.db.prepare('SELECT consecutive_failures FROM endpoints WHERE id = ?').get(ev.endpoint_id);
+            endpointStreak = {
+              endpointId: ev.endpoint_id,
+              prevAlertLevel,
+              consecutiveFailures: updatedEp ? updatedEp.consecutive_failures : (ep.consecutive_failures + 1),
+              recovered: false
+            };
+          }
+        }
+      }
     })();
 
-    return this.getEvent(eventId);
+    const evResult = this.getEvent(eventId);
+    if (evResult && endpointStreak) {
+      evResult._endpointStreak = endpointStreak;
+    }
+    return evResult;
   }
 
   getEvent(id) {

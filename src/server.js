@@ -10,6 +10,7 @@ const Storage = require('./storage');
 const Dispatcher = require('./dispatcher');
 const RetryWorker = require('./worker');
 const { checkUrl } = require('./netguard');
+const { assessDisablementRisk } = require('./sentinel');
 
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const ENDPOINT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -83,7 +84,12 @@ function publicEndpoint(ep) {
       }
     }
   }
-  return { ...rest, custom_headers: maskedHeaders, has_secret: Boolean(secret) };
+  return {
+    ...rest,
+    custom_headers: maskedHeaders,
+    has_secret: Boolean(secret),
+    disablementRisk: assessDisablementRisk(ep)
+  };
 }
 
 function createServer(options = {}) {
@@ -540,6 +546,13 @@ function createServer(options = {}) {
   // List Endpoints (secrets are never returned)
   app.get('/api/endpoints', (req, res) => {
     res.json(storage.listEndpoints().map(publicEndpoint));
+  });
+
+  // Get single endpoint
+  app.get('/api/endpoints/:id', (req, res) => {
+    const ep = storage.getEndpoint(req.params.id);
+    if (!ep) return res.status(404).json({ error: 'Endpoint not found' });
+    res.json(publicEndpoint(ep));
   });
 
   // Create or Update Endpoint

@@ -3,6 +3,7 @@ const https = require('https');
 const crypto = require('crypto');
 const EventEmitter = require('events');
 const Alerter = require('./alerter');
+const { assessDisablementRisk } = require('./sentinel');
 const { checkUrl, guardedLookup } = require('./netguard');
 
 function safeEqual(a, b) {
@@ -376,8 +377,9 @@ class Dispatcher extends EventEmitter {
         }
 
         const message = isSuccess ? '' : (errorMessage || `Destination returned HTTP ${statusCode}`);
+        let recordResult = null;
         try {
-          this.storage.recordAttempt({
+          recordResult = this.storage.recordAttempt({
             eventId: event.id,
             statusCode,
             responseBody,
@@ -403,16 +405,55 @@ class Dispatcher extends EventEmitter {
 
         this.emit('delivery', result);
 
+        const alertUrl = endpoint.alert_webhook_url || process.env.HOOKARMOR_ALERT_WEBHOOK_URL || null;
+
         if (!isSuccess) {
           // Alert on initial failure and on final exhaustion to prevent notification flood (§6.6)
           const isFirstFailure = (event.attempts === 0);
           const isExhausted = !nextRetryAt;
           if (isFirstFailure || isExhausted) {
-            await Alerter.sendAlert(endpoint.alert_webhook_url, {
+            await Alerter.sendAlert(alertUrl, {
               event,
               endpoint,
               attempt: { statusCode, errorMessage: message, latencyMs, isExhausted }
             }, { strictSSRF: this.strictSSRF });
+          }
+
+          // Webhook Disablement Sentinel: evaluate streak against provider policy
+          try {
+            const currentEndpoint = this.storage.getEndpoint(endpoint.id);
+            if (currentEndpoint) {
+              const risk = assessDisablementRisk(currentEndpoint);
+              const prevLevel = (recordResult && recordResult._endpointStreak)
+                ? recordResult._endpointStreak.prevAlertLevel
+                : 0;
+
+              // Only dispatch alert when risk level escalates (prevents alert fatigue)
+              if (risk.numericLevel > prevLevel) {
+                await Alerter.sendDisablementAlert(alertUrl, {
+                  endpoint: currentEndpoint,
+                  risk
+                }, { strictSSRF: this.strictSSRF });
+                this.storage.updateEndpointAlertLevel(currentEndpoint.id, risk.numericLevel);
+              }
+            }
+          } catch (sentinelErr) {
+            console.error(`[Dispatcher] Sentinel alert failed for ${endpoint.id}:`, sentinelErr.message);
+          }
+        } else {
+          // Webhook Disablement Sentinel: check if recovered from an alerted failure streak
+          try {
+            const streak = recordResult && recordResult._endpointStreak;
+            if (streak && streak.recovered) {
+              const currentEndpoint = this.storage.getEndpoint(endpoint.id);
+              if (currentEndpoint) {
+                await Alerter.sendRecoveryAlert(alertUrl, {
+                  endpoint: currentEndpoint
+                }, { strictSSRF: this.strictSSRF });
+              }
+            }
+          } catch (recoveryErr) {
+            console.error(`[Dispatcher] Recovery alert failed for ${endpoint.id}:`, recoveryErr.message);
           }
         }
 

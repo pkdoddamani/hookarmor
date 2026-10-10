@@ -1598,6 +1598,206 @@ test('N11: /api/events honors limits exceeding 500 up to 5000 ceiling', async ()
   }
 });
 
+test('Sentinel: assessDisablementRisk calculates provider cutoff thresholds accurately', async () => {
+  const { assessDisablementRisk } = require('../src/sentinel');
+
+  // Healthy
+  assert.strictEqual(assessDisablementRisk(null).level, 'healthy');
+  assert.strictEqual(assessDisablementRisk({ consecutive_failures: 0 }).level, 'healthy');
+
+  // Shopify policy (19 cutoff)
+  assert.strictEqual(assessDisablementRisk({ provider: 'shopify', consecutive_failures: 4 }).level, 'healthy');
+  const shopifyWarn = assessDisablementRisk({ provider: 'shopify', consecutive_failures: 5 });
+  assert.strictEqual(shopifyWarn.level, 'warning');
+  assert.strictEqual(shopifyWarn.remaining, 14);
+
+  const shopifyDanger = assessDisablementRisk({ provider: 'shopify', consecutive_failures: 10 });
+  assert.strictEqual(shopifyDanger.level, 'danger');
+  assert.strictEqual(shopifyDanger.remaining, 9);
+
+  const shopifyCrit = assessDisablementRisk({ provider: 'shopify', consecutive_failures: 15 });
+  assert.strictEqual(shopifyCrit.level, 'critical');
+  assert.strictEqual(shopifyCrit.remaining, 4);
+
+  // Razorpay policy (24h cutoff)
+  const now = new Date();
+  const past20h = new Date(now.getTime() - 20 * 3600 * 1000).toISOString();
+  const rzCrit = assessDisablementRisk({ provider: 'razorpay', consecutive_failures: 8, streak_started_at: past20h });
+  assert.strictEqual(rzCrit.level, 'critical');
+  assert.strictEqual(rzCrit.cutoffHours, 24);
+  assert.ok(rzCrit.hoursRemaining <= 4);
+
+  // Generic policy
+  assert.strictEqual(assessDisablementRisk({ provider: 'generic', consecutive_failures: 5 }).level, 'warning');
+  assert.strictEqual(assessDisablementRisk({ provider: 'generic', consecutive_failures: 10 }).level, 'danger');
+  assert.strictEqual(assessDisablementRisk({ provider: 'generic', consecutive_failures: 20 }).level, 'critical');
+});
+
+test('Sentinel: recordAttempt increments consecutive failures and resets on 200 OK', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_streak', name: 'Streak Test', targetUrl: 'http://127.0.0.1:9999/hook', provider: 'shopify' });
+    ha.storage.saveEvent({ id: 'evt_s_1', endpointId: 'ep_streak', provider: 'shopify', headers: {}, rawBody: '{}' });
+
+    // 1st failure
+    const res1 = ha.storage.recordAttempt({ eventId: 'evt_s_1', statusCode: 500, errorMessage: 'Boom 1' });
+    assert.strictEqual(res1._endpointStreak.consecutiveFailures, 1);
+    let ep = ha.storage.getEndpoint('ep_streak');
+    assert.strictEqual(ep.consecutive_failures, 1);
+    assert.ok(ep.streak_started_at);
+
+    // 2nd failure
+    ha.storage.saveEvent({ id: 'evt_s_2', endpointId: 'ep_streak', provider: 'shopify', headers: {}, rawBody: '{}' });
+    const res2 = ha.storage.recordAttempt({ eventId: 'evt_s_2', statusCode: 502, errorMessage: 'Boom 2' });
+    assert.strictEqual(res2._endpointStreak.consecutiveFailures, 2);
+    ep = ha.storage.getEndpoint('ep_streak');
+    assert.strictEqual(ep.consecutive_failures, 2);
+
+    // Set alerted level to test recovery flag
+    ha.storage.updateEndpointAlertLevel('ep_streak', 2);
+    ep = ha.storage.getEndpoint('ep_streak');
+    assert.strictEqual(ep.last_alerted_level, 2);
+
+    // Delivery success (200 OK) -> streak resets, recovered = true
+    ha.storage.saveEvent({ id: 'evt_s_3', endpointId: 'ep_streak', provider: 'shopify', headers: {}, rawBody: '{}' });
+    const res3 = ha.storage.recordAttempt({ eventId: 'evt_s_3', statusCode: 200, latencyMs: 42 });
+    assert.strictEqual(res3._endpointStreak.consecutiveFailures, 0);
+    assert.strictEqual(res3._endpointStreak.recovered, true);
+
+    ep = ha.storage.getEndpoint('ep_streak');
+    assert.strictEqual(ep.consecutive_failures, 0);
+    assert.strictEqual(ep.streak_started_at, null);
+    assert.strictEqual(ep.last_alerted_level, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('Sentinel: dispatcher fires escalated disablement alerts and recovery alerts', async () => {
+  const alertTarget = await startTarget();
+  const hookTarget = await startTarget({ status: 500 });
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_sentinel_alert',
+      name: 'Shopify Alerts',
+      targetUrl: hookTarget.url,
+      provider: 'shopify',
+      alertWebhookUrl: alertTarget.url,
+      autoRetry: 0
+    });
+
+    // Simulate 4 failures manually
+    for (let i = 1; i <= 4; i++) {
+      const eid = `evt_sa_${i}`;
+      ha.storage.saveEvent({ id: eid, endpointId: 'ep_sentinel_alert', provider: 'shopify', headers: {}, rawBody: '{}' });
+      ha.storage.recordAttempt({ eventId: eid, statusCode: 500, errorMessage: 'Fail' });
+    }
+    assert.strictEqual(alertTarget.requests.length, 0);
+
+    // 5th failure via dispatcher -> reaches warning threshold (level 1), alert fires!
+    const ev5 = ha.storage.saveEvent({ id: 'evt_sa_5', endpointId: 'ep_sentinel_alert', provider: 'shopify', headers: {}, rawBody: '{}' });
+    await ha.dispatcher.dispatch(ev5, ha.storage.getEndpoint('ep_sentinel_alert'));
+
+    await waitFor(() => alertTarget.requests.length >= 2, 2000); // 1 normal failure alert + 1 sentinel alert
+    const sentinelAlert1 = alertTarget.requests.find(r => r.body.includes('HookArmor Sentinel') || r.body.includes('Shopify Webhook Delivery Streak Failing'));
+    assert.ok(sentinelAlert1, 'Must dispatch Sentinel warning alert');
+    const epAfter5 = ha.storage.getEndpoint('ep_sentinel_alert');
+    assert.strictEqual(epAfter5.last_alerted_level, 1);
+
+    // 6th failure via dispatcher -> still level 1, no duplicate sentinel alert
+    const ev6 = ha.storage.saveEvent({ id: 'evt_sa_6', endpointId: 'ep_sentinel_alert', provider: 'shopify', headers: {}, rawBody: '{}' });
+    await ha.dispatcher.dispatch(ev6, ha.storage.getEndpoint('ep_sentinel_alert'));
+    await sleep(100);
+    // Sentinel alert should NOT have fired again
+    const sentinelAlertsAfter6 = alertTarget.requests.filter(r => r.body.includes('Shopify Webhook Delivery Streak Failing'));
+    assert.strictEqual(sentinelAlertsAfter6.length, 1, 'Must not duplicate alert at same risk level');
+
+    // Switch hook target to 200 OK -> recovery alert!
+    hookTarget.status = 200;
+    const ev7 = ha.storage.saveEvent({ id: 'evt_sa_7', endpointId: 'ep_sentinel_alert', provider: 'shopify', headers: {}, rawBody: '{}' });
+    await ha.dispatcher.dispatch(ev7, ha.storage.getEndpoint('ep_sentinel_alert'));
+
+    await waitFor(() => alertTarget.requests.some(r => r.body.includes('Endpoint Recovered') || r.body.includes('back online')), 2000);
+    const recoveryAlert = alertTarget.requests.find(r => r.body.includes('Endpoint Recovered') || r.body.includes('back online'));
+    assert.ok(recoveryAlert, 'Must dispatch recovery alert when destination returns 200 OK');
+
+    const epAfterRecovery = ha.storage.getEndpoint('ep_sentinel_alert');
+    assert.strictEqual(epAfterRecovery.consecutive_failures, 0);
+    assert.strictEqual(epAfterRecovery.last_alerted_level, 0);
+  } finally {
+    await ha.close();
+    alertTarget.close();
+    hookTarget.close();
+  }
+});
+
+test('Sentinel: GET /api/endpoints and /api/endpoints/:id expose disablementRisk', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_api_sentinel',
+      name: 'API Risk Target',
+      targetUrl: 'http://127.0.0.1:9999/hook',
+      provider: 'shopify'
+    });
+
+    for (let i = 1; i <= 5; i++) {
+      const eid = `evt_apis_${i}`;
+      ha.storage.saveEvent({ id: eid, endpointId: 'ep_api_sentinel', provider: 'shopify', headers: {}, rawBody: '{}' });
+      ha.storage.recordAttempt({ eventId: eid, statusCode: 500, errorMessage: 'Fail' });
+    }
+
+    const listRes = await fetch(`${ha.base}/api/endpoints`);
+    assert.strictEqual(listRes.status, 200);
+    const list = await listRes.json();
+    const epInList = list.find(e => e.id === 'ep_api_sentinel');
+    assert.ok(epInList.disablementRisk, 'Endpoint in list must contain disablementRisk');
+    assert.strictEqual(epInList.disablementRisk.level, 'warning');
+    assert.strictEqual(epInList.disablementRisk.consecutiveFailures, 5);
+    assert.strictEqual(epInList.disablementRisk.cutoff, 19);
+
+    const singleRes = await fetch(`${ha.base}/api/endpoints/ep_api_sentinel`);
+    assert.strictEqual(singleRes.status, 200);
+    const single = await singleRes.json();
+    assert.strictEqual(single.disablementRisk.level, 'warning');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('Sentinel: CLI status displays disablement warnings when failure streak is active', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_cli_status',
+      name: 'CLI Status Risk',
+      targetUrl: 'http://127.0.0.1:9999/hook',
+      provider: 'shopify'
+    });
+
+    for (let i = 1; i <= 10; i++) {
+      const eid = `evt_cs_${i}`;
+      ha.storage.saveEvent({ id: eid, endpointId: 'ep_cli_status', provider: 'shopify', headers: {}, rawBody: '{}' });
+      ha.storage.recordAttempt({ eventId: eid, statusCode: 500, errorMessage: 'Down' });
+    }
+
+    const { execFile } = require('child_process');
+    const out = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['bin/hookarmor.js', 'status', '-u', ha.base], (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+
+    assert.ok(out.includes('WEBHOOK DISABLEMENT SENTINEL WARNINGS'), 'Must display sentinel warning header');
+    assert.ok(out.includes('CLI Status Risk'), 'Must display failing endpoint name');
+    assert.ok(out.includes('Consecutive Failures: 10'), 'Must display failure count');
+  } finally {
+    await ha.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

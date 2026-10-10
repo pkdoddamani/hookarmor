@@ -498,6 +498,9 @@
       </div>
     </div>
 
+    <!-- Webhook Disablement Sentinel Banner -->
+    <div id="sentinel-alert-banner" style="display: none; background: rgba(220, 38, 38, 0.15); border: 1px solid rgba(220, 38, 38, 0.4); color: #fca5a5; padding: 0.85rem 1.25rem; border-radius: 8px; margin-bottom: 1.5rem; font-size: 0.88rem;"></div>
+
     <!-- Main Grid -->
     <div class="dashboard-content">
       <!-- Left: Endpoints & Simulator Controls -->
@@ -516,6 +519,17 @@
             <div class="form-group">
               <label>Display Name</label>
               <input type="text" id="inp-ep-name" class="form-control" placeholder="Stripe Billing">
+            </div>
+            <div class="form-group">
+              <label>Provider Scheme</label>
+              <select id="inp-ep-provider" class="form-control">
+                <option value="generic">Generic (Standard HTTP)</option>
+                <option value="shopify">Shopify (19-failure deletion protection)</option>
+                <option value="razorpay">Razorpay (24h auto-disable protection)</option>
+                <option value="stripe">Stripe</option>
+                <option value="svix">Svix / Clerk</option>
+                <option value="github">GitHub</option>
+              </select>
             </div>
             <div class="form-group">
               <label>Target Destination URL</label>
@@ -913,6 +927,28 @@
 
         cachedEndpoints = await res.json();
 
+        // Update Disablement Sentinel Banner
+        const criticalEndpoints = cachedEndpoints.filter(e => e.disablementRisk && (e.disablementRisk.level === 'critical' || e.disablementRisk.level === 'danger'));
+        const banner = document.getElementById('sentinel-alert-banner');
+        if (banner) {
+          if (criticalEndpoints.length > 0) {
+            banner.style.display = 'block';
+            banner.innerHTML = `
+              <div style="display: flex; align-items: flex-start; gap: 0.75rem;">
+                <span style="font-size: 1.25rem; line-height: 1;">🚨</span>
+                <div>
+                  <strong style="color: #f87171; font-size: 0.92rem;">Webhook Disablement Sentinel Alert:</strong>
+                  <div style="margin-top: 0.25rem; color: #fecaca;">
+                    ${criticalEndpoints.map(e => `<strong>${esc(e.name)} (${esc(e.id)}):</strong> ${esc(e.disablementRisk.message)}`).join('<br>')}
+                  </div>
+                </div>
+              </div>
+            `;
+          } else {
+            banner.style.display = 'none';
+          }
+        }
+
         if (cachedEndpoints.length === 0) {
           container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">No endpoints yet. Click "+ New" above to create one.</div>`;
           simSelect.innerHTML = `<option value="">No endpoints</option>`;
@@ -923,15 +959,33 @@
           <div class="endpoint-item">
             <div class="endpoint-name" style="display: flex; align-items: center; justify-content: space-between;">
               <span>${esc(ep.name)}</span>
-              ${!ep.has_secret ? '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.68rem; padding: 0.1rem 0.4rem;">⚠️ No Secret</span>' : ''}
+              <div style="display: flex; gap: 0.35rem; align-items: center;">
+                ${ep.provider && ep.provider !== 'generic' ? `<span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); font-size: 0.65rem; padding: 0.1rem 0.35rem;">${esc(ep.provider.toUpperCase())}</span>` : ''}
+                ${!ep.has_secret ? '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.68rem; padding: 0.1rem 0.4rem;">⚠️ No Secret</span>' : ''}
+              </div>
             </div>
             <div class="endpoint-url" title="Ingress URL">${esc(window.location.origin)}/in/${esc(ep.id)}</div>
             <div class="target-url">🎯 <strong>Target:</strong> ${esc(ep.target_url)}</div>
-            <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.75rem;">
+            <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 0.75rem; flex-wrap: wrap;">
               <span>Auto-Retry: <strong>${ep.auto_retry ? 'Yes' : 'No'}</strong></span>
               <span>Max: <strong>${esc(ep.max_retries)} attempts</strong></span>
               <span>Signed: <strong>${ep.has_secret ? 'Yes' : '<span style="color: #f59e0b;">No (⚠️ Unverified)</span>'}</strong></span>
             </div>
+            ${ep.disablementRisk && ep.disablementRisk.level !== 'healthy' ? `
+              <div style="margin-top: 0.5rem; padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.72rem; ${
+                ep.disablementRisk.level === 'critical' ? 'background: rgba(220, 38, 38, 0.2); border: 1px solid rgba(220, 38, 38, 0.5); color: #fca5a5;' :
+                ep.disablementRisk.level === 'danger' ? 'background: rgba(234, 88, 12, 0.2); border: 1px solid rgba(234, 88, 12, 0.5); color: #fdba74;' :
+                'background: rgba(234, 179, 8, 0.15); border: 1px solid rgba(234, 179, 8, 0.4); color: #fde047;'
+              }">
+                <div style="font-weight: 700; margin-bottom: 2px;">
+                  ${ep.disablementRisk.level === 'critical' ? '🚨 CRITICAL RISK' : (ep.disablementRisk.level === 'danger' ? '⚠️ HIGH RISK' : '⚠️ WARNING')}: ${esc(ep.disablementRisk.alertTitle || 'Failure Streak')}
+                </div>
+                <div>${esc(ep.disablementRisk.message)}</div>
+                <div style="margin-top: 3px; opacity: 0.85; font-size: 0.68rem;">
+                  Consecutive Failures: <strong>${esc(ep.disablementRisk.consecutiveFailures)}</strong>${ep.disablementRisk.cutoff ? ` / ${ep.disablementRisk.cutoff} limit` : ''}
+                </div>
+              </div>
+            ` : ''}
           </div>
         `).join('');
 
@@ -1026,6 +1080,8 @@
       const targetUrl = document.getElementById('inp-ep-target').value.trim();
       const alertWebhookUrl = document.getElementById('inp-ep-alert').value.trim();
       const secret = document.getElementById('inp-ep-secret').value.trim();
+      const providerEl = document.getElementById('inp-ep-provider');
+      const provider = providerEl ? providerEl.value : 'generic';
 
       if (!id || !name || !targetUrl) {
         alert('Please fill out ID, Name, and Target URL');
@@ -1035,7 +1091,7 @@
       const res = await fetch('/api/endpoints', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ id, name, targetUrl, alertWebhookUrl, autoRetry: 1, maxRetries: 5, ...(secret ? { secret } : {}) })
+        body: JSON.stringify({ id, name, targetUrl, provider, alertWebhookUrl, autoRetry: 1, maxRetries: 5, ...(secret ? { secret } : {}) })
       });
 
       if (res.status === 401) {

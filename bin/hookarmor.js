@@ -386,14 +386,19 @@ program
 
 program
   .command('status')
-  .description('Check HookArmor metrics and dead-letter queue count')
+  .description('Check HookArmor metrics, dead-letter queue count, and sentinel status')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
   .option('-k, --api-key <key>', 'Admin API key (default: HOOKARMOR_API_KEY)', process.env.HOOKARMOR_API_KEY)
   .action(async (options) => {
     const baseUrl = options.url.replace(/\/$/, '');
     try {
-      const res = await fetch(`${baseUrl}/api/stats`, { headers: apiHeaders(options.apiKey) });
-      const data = await readJson(res);
+      const [statsRes, epRes] = await Promise.all([
+        fetch(`${baseUrl}/api/stats`, { headers: apiHeaders(options.apiKey) }),
+        fetch(`${baseUrl}/api/endpoints`, { headers: apiHeaders(options.apiKey) }).catch(() => null)
+      ]);
+      const data = await readJson(statsRes);
+      const endpoints = epRes ? await readJson(epRes).catch(() => []) : [];
+
       console.log(chalk.blue.bold('\n🛡️  HookArmor Metrics'));
       console.log(chalk.gray('───────────────────────'));
       console.log(`Total Ingested : ${chalk.cyan(data.total)}`);
@@ -401,6 +406,20 @@ program
       console.log(`Dead-Letter    : ${chalk.red(data.failed)}`);
       console.log(`Pending        : ${chalk.yellow(data.pending)}`);
       console.log(`Avg Latency    : ${chalk.white(`${data.avgLatencyMs} ms`)}\n`);
+
+      const atRisk = Array.isArray(endpoints) ? endpoints.filter(e => e.disablementRisk && e.disablementRisk.level !== 'healthy') : [];
+      if (atRisk.length > 0) {
+        console.log(chalk.red.bold('⚠️  WEBHOOK DISABLEMENT SENTINEL WARNINGS:'));
+        console.log(chalk.gray('─────────────────────────────────────────'));
+        for (const ep of atRisk) {
+          const r = ep.disablementRisk;
+          const badge = r.level === 'critical' ? chalk.bgRed.white.bold(' CRITICAL ') : (r.level === 'danger' ? chalk.bgYellow.black.bold(' DANGER ') : chalk.yellow.bold(' WARNING '));
+          console.log(`  ${badge} ${chalk.white.bold(ep.name)} (${chalk.cyan(ep.id)})`);
+          console.log(`     Provider: ${(r.provider || 'generic').toUpperCase()} | Consecutive Failures: ${chalk.red.bold(r.consecutiveFailures)}`);
+          console.log(`     ${chalk.yellow(r.message)}`);
+        }
+        console.log('');
+      }
     } catch (err) {
       console.error(chalk.red(`Status request to ${baseUrl} failed: ${err.message}`));
       process.exitCode = 1;
@@ -418,6 +437,7 @@ endpointsCmd
   .requiredOption('-t, --target <url>', 'Destination URL')
   .option('-n, --name <name>', 'Descriptive endpoint name')
   .option('-s, --secret <secret>', 'Provider signing secret')
+  .option('-p, --provider <provider>', 'Provider scheme (stripe, shopify, razorpay, svix, generic)')
   .option('-a, --alert <url>', 'Alert webhook URL')
   .option('--headers <json>', 'Custom destination headers JSON string')
   .option('--max-retries <num>', 'Maximum retry attempts', '5')
@@ -441,6 +461,7 @@ endpointsCmd
       name: options.name || options.id,
       targetUrl: options.target,
       secret: options.secret,
+      provider: options.provider,
       alertWebhookUrl: options.alert,
       maxRetries: parseInt(options.maxRetries, 10),
       concurrencyLimit: parseInt(options.concurrency, 10),
@@ -473,11 +494,19 @@ endpointsCmd
       console.log(chalk.blue.bold(`\n🛡️  HookArmor Endpoints (${endpoints.length})`));
       console.log(chalk.gray('───────────────────────────────────────────────────────'));
       for (const ep of endpoints) {
-        console.log(`• ${chalk.cyan.bold(ep.id)} (${ep.name})`);
-        console.log(`  Target:  ${chalk.green(ep.target_url)}`);
-        console.log(`  Secret:  ${ep.has_secret ? chalk.yellow('Configured (AES-256-GCM)') : chalk.gray('None')}`);
+        const provStr = ep.provider ? chalk.magenta(` [${ep.provider.toUpperCase()}]`) : '';
+        console.log(`• ${chalk.cyan.bold(ep.id)}${provStr} (${ep.name})`);
+        console.log(`  Target:   ${chalk.green(ep.target_url)}`);
+        console.log(`  Secret:   ${ep.has_secret ? chalk.yellow('Configured (AES-256-GCM)') : chalk.gray('None')}`);
+        if (ep.disablementRisk && ep.disablementRisk.level !== 'healthy') {
+          const r = ep.disablementRisk;
+          const colorFn = r.level === 'critical' ? chalk.red.bold : (r.level === 'danger' ? chalk.yellow.bold : chalk.yellow);
+          console.log(`  Sentinel: ${colorFn(`[${r.level.toUpperCase()}] ${r.consecutiveFailures} consecutive failures - ${r.message}`)}`);
+        } else {
+          console.log(`  Sentinel: ${chalk.green('Healthy (0 failure streak)')}`);
+        }
         if (ep.custom_headers && Object.keys(ep.custom_headers).length > 0) {
-          console.log(`  Headers: ${chalk.gray(JSON.stringify(ep.custom_headers))}`);
+          console.log(`  Headers:  ${chalk.gray(JSON.stringify(ep.custom_headers))}`);
         }
         console.log('');
       }
