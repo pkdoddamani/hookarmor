@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Tests: Passing](https://img.shields.io/badge/Tests-82%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
-[![Release: v1.3.0](https://img.shields.io/badge/Release-v1.3.0-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.3.0)
+[![Release: v1.3.1](https://img.shields.io/badge/Release-v1.3.1-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.3.1)
 [![npm version](https://img.shields.io/npm/v/hookarmor.svg?color=cb3837)](https://www.npmjs.com/package/hookarmor)
 
 ---
