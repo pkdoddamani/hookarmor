@@ -1378,6 +1378,72 @@ test('unpinned endpoint auto-pins provider on first verified webhook', async () 
     target.close();
   }
 });
+test('CLI replay: --dry-run prints event and destination preview without dispatching', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_cli_prev', name: 'CLI Preview Target', targetUrl: target.url });
+    ha.storage.saveEvent({
+      id: 'evt_cli_preview_1',
+      endpointId: 'ep_cli_prev',
+      provider: 'stripe',
+      eventType: 'payment_intent.succeeded',
+      headers: {},
+      rawBody: JSON.stringify({ amount: 9900 }),
+      status: 'failed'
+    });
+
+    const { execFile } = require('child_process');
+    const out = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['bin/hookarmor.js', 'replay', 'evt_cli_preview_1', '-u', ha.base, '--dry-run'], (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+
+    assert.ok(out.includes('Webhook Replay Preview'), 'Must include preview header');
+    assert.ok(out.includes('CLI Preview Target'), 'Must include destination endpoint name');
+    assert.ok(out.includes(target.url), 'Must include destination target URL');
+    assert.ok(out.includes('payment_intent.succeeded'), 'Must include event type');
+    assert.ok(out.includes('Dry-run mode'), 'Must indicate dry-run mode');
+    assert.strictEqual(target.requests.length, 0, 'Must NOT dispatch any request in dry-run mode');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('CLI replay: -y confirms and dispatches replay in non-interactive mode', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_cli_yes', name: 'CLI Yes Target', targetUrl: target.url });
+    ha.storage.saveEvent({
+      id: 'evt_cli_yes_1',
+      endpointId: 'ep_cli_yes',
+      provider: 'generic',
+      eventType: 'customer.created',
+      headers: {},
+      rawBody: JSON.stringify({ id: 'cus_123' }),
+      status: 'failed'
+    });
+
+    const { execFile } = require('child_process');
+    const out = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['bin/hookarmor.js', 'replay', 'evt_cli_yes_1', '-u', ha.base, '-y'], (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve(stdout);
+      });
+    });
+
+    assert.ok(out.includes('Webhook Replay Preview'), 'Must show preview even with -y');
+    assert.ok(out.includes('Replay successful'), 'Must execute and succeed');
+    assert.strictEqual(target.requests.length, 1, 'Target must receive replayed request');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
 
 (async () => {
   let failed = 0;

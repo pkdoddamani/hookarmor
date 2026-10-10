@@ -1,9 +1,24 @@
 #!/usr/bin/env node
 
 const { Command } = require('commander');
+const readline = require('readline');
 const _chalk = require('chalk');
 const chalk = _chalk.default || _chalk;
 const { createServer } = require('../src/server');
+
+function askConfirmation(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+    rl.question(question, (answer) => {
+      rl.close();
+      const trimmed = answer.trim().toLowerCase();
+      resolve(trimmed === 'y' || trimmed === 'yes');
+    });
+  });
+}
 
 const program = new Command();
 
@@ -151,30 +166,156 @@ program
 
 program
   .command('replay')
-  .description('Replay dead-letter events from terminal')
+  .description('Replay dead-letter events from terminal with payload preview and confirmation')
   .argument('[eventId]', 'Specific event ID to replay')
   .option('--failed', 'Replay all failed events (including ones that used up their automatic retries)')
+  .option('-y, --yes', 'Skip confirmation prompt and execute replay immediately')
+  .option('--dry-run', 'Preview event details and target destination without executing')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
   .option('-k, --api-key <key>', 'Admin API key (default: HOOKARMOR_API_KEY)', process.env.HOOKARMOR_API_KEY)
   .action(async (eventId, options) => {
     const baseUrl = options.url.replace(/\/$/, '');
     try {
       if (options.failed) {
-        console.log(chalk.yellow('🔄 Replaying all dead-letter events...'));
+        // Fetch failed events and endpoints for summary preview
+        const [eventsRes, endpointsRes] = await Promise.all([
+          fetch(`${baseUrl}/api/events?status=failed&limit=100`, { headers: apiHeaders(options.apiKey) }),
+          fetch(`${baseUrl}/api/endpoints`, { headers: apiHeaders(options.apiKey) })
+        ]);
+        const failedEvents = await readJson(eventsRes);
+        const endpoints = await readJson(endpointsRes);
+        const epMap = new Map((Array.isArray(endpoints) ? endpoints : []).map(e => [e.id, e]));
+
+        if (!Array.isArray(failedEvents) || failedEvents.length === 0) {
+          console.log(chalk.green('\n✔ No failed events found in Dead-Letter Queue.\n'));
+          return;
+        }
+
+        const byEndpoint = new Map();
+        for (const ev of failedEvents) {
+          const list = byEndpoint.get(ev.endpoint_id) || [];
+          list.push(ev);
+          byEndpoint.set(ev.endpoint_id, list);
+        }
+
+        console.log(chalk.blue.bold('\n🔍 Bulk Replay Summary'));
+        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
+        console.log(`Found ${chalk.red.bold(failedEvents.length)} failed dead-letter event(s) across ${chalk.white.bold(byEndpoint.size)} endpoint(s):\n`);
+
+        for (const [epId, evs] of byEndpoint) {
+          const ep = epMap.get(epId);
+          const name = ep ? ep.name : epId;
+          const url = ep ? ep.target_url : 'Unknown target';
+          console.log(`  • ${chalk.white.bold(name)} (${chalk.cyan(epId)}) ➔ ${chalk.green(url)}`);
+          console.log(`    Total: ${chalk.yellow(evs.length)} event(s)`);
+          const typeCounts = new Map();
+          for (const ev of evs) {
+            const t = ev.event_type || 'Unknown';
+            typeCounts.set(t, (typeCounts.get(t) || 0) + 1);
+          }
+          for (const [t, count] of typeCounts) {
+            console.log(chalk.gray(`      - ${count}x ${t}`));
+          }
+        }
+        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
+
+        if (options.dryRun) {
+          console.log(chalk.cyan('ℹ Dry-run mode: bulk replay summary previewed without sending requests.\n'));
+          return;
+        }
+
+        console.log(chalk.yellow('⚠️  WARNING: Bulk replay will dispatch outbound HTTP POST requests'));
+        console.log(chalk.yellow('    for all listed events. This may trigger multiple billing actions,'));
+        console.log(chalk.yellow('    emails, or heavy load on your downstream servers.\n'));
+
+        if (!options.yes) {
+          if (!process.stdin.isTTY) {
+            console.error(chalk.red('✖ Non-interactive terminal: pass -y / --yes to confirm replay, or --dry-run to preview only.\n'));
+            process.exitCode = 1;
+            return;
+          }
+          const confirmed = await askConfirmation(chalk.bold(`? Proceed with bulk replay of ${failedEvents.length} event(s)? (y/N) `));
+          if (!confirmed) {
+            console.log(chalk.gray('✖ Bulk replay cancelled. No requests were sent.\n'));
+            return;
+          }
+        }
+
+        console.log(chalk.yellow('\n🔄 Replaying all dead-letter events...'));
         const res = await fetch(`${baseUrl}/api/events/replay-all`, { method: 'POST', headers: apiHeaders(options.apiKey), body: '{}' });
         const data = await readJson(res);
         console.log(chalk.green(`✅ Dispatched replay for ${data.replayedCount} events.`));
         if (data.remaining > 0) {
-          console.log(chalk.yellow(`   ${data.remaining} failed events still queued; run the command again to continue.`));
+          console.log(chalk.yellow(`   ${data.remaining} failed events still queued; run the command again to continue.\n`));
+        } else {
+          console.log('');
         }
       } else if (eventId) {
-        console.log(chalk.yellow(`🔄 Replaying event ${eventId}...`));
+        // Fetch event metadata and endpoints for single event preview
+        const [eventRes, endpointsRes] = await Promise.all([
+          fetch(`${baseUrl}/api/events/${encodeURIComponent(eventId)}`, { headers: apiHeaders(options.apiKey) }),
+          fetch(`${baseUrl}/api/endpoints`, { headers: apiHeaders(options.apiKey) })
+        ]);
+        const event = await readJson(eventRes);
+        const endpoints = await readJson(endpointsRes);
+        const ep = Array.isArray(endpoints) ? endpoints.find(e => e.id === event.endpoint_id) : null;
+        const targetUrl = ep ? ep.target_url : 'Unknown target';
+
+        console.log(chalk.blue.bold('\n🔍 Webhook Replay Preview'));
+        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
+        console.log(`Event ID     : ${chalk.cyan(event.id)}`);
+        console.log(`Event Type   : ${chalk.white(event.event_type || 'Unknown')}`);
+        console.log(`Provider     : ${chalk.yellow(event.provider || 'generic')}`);
+        console.log(`Status       : ${event.status === 'delivered' ? chalk.green('delivered') : chalk.red(event.status)}`);
+        console.log(`Attempts     : ${chalk.white(event.attempts || 0)}`);
+        console.log(`Ingested At  : ${chalk.gray(event.created_at || 'Unknown')}`);
+        console.log(`Endpoint     : ${chalk.white(ep ? ep.name : event.endpoint_id)} (${event.endpoint_id})`);
+        console.log(`Target URL   : ${chalk.green.bold(targetUrl)}`);
+
+        if (event.raw_body) {
+          console.log(chalk.gray('\nPayload Preview:'));
+          let snippet = event.raw_body;
+          try {
+            snippet = JSON.stringify(JSON.parse(event.raw_body), null, 2);
+          } catch (_) {}
+          const lines = snippet.split('\n');
+          if (lines.length > 12) {
+            console.log(chalk.gray(lines.slice(0, 12).map(l => '  ' + l).join('\n') + `\n  ... (+${lines.length - 12} more lines)`));
+          } else {
+            console.log(chalk.gray(lines.map(l => '  ' + l).join('\n')));
+          }
+        }
+        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
+
+        if (options.dryRun) {
+          console.log(chalk.cyan('ℹ Dry-run mode: replay previewed without sending requests.\n'));
+          return;
+        }
+
+        console.log(chalk.yellow('⚠️  WARNING: Replaying this webhook will dispatch an outbound POST'));
+        console.log(chalk.yellow('    request to your destination server and may trigger order'));
+        console.log(chalk.yellow('    fulfillment, invoice emails, or downstream state changes.\n'));
+
+        if (!options.yes) {
+          if (!process.stdin.isTTY) {
+            console.error(chalk.red('✖ Non-interactive terminal: pass -y / --yes to confirm replay, or --dry-run to preview only.\n'));
+            process.exitCode = 1;
+            return;
+          }
+          const confirmed = await askConfirmation(chalk.bold(`? Proceed with replay to ${targetUrl}? (y/N) `));
+          if (!confirmed) {
+            console.log(chalk.gray('✖ Replay cancelled. No requests were sent.\n'));
+            return;
+          }
+        }
+
+        console.log(chalk.yellow(`\n🔄 Replaying event ${eventId}...`));
         const res = await fetch(`${baseUrl}/api/events/${encodeURIComponent(eventId)}/replay`, { method: 'POST', headers: apiHeaders(options.apiKey), body: '{}' });
         const data = await readJson(res);
         if (data.success) {
-          console.log(chalk.green(`✅ Replay successful: HTTP ${data.statusCode} (${data.latencyMs}ms)`));
+          console.log(chalk.green(`✅ Replay successful: HTTP ${data.statusCode} (${data.latencyMs}ms)\n`));
         } else {
-          console.log(chalk.red(`❌ Replay failed: HTTP ${data.statusCode} (${data.errorMessage || 'Target rejected'})`));
+          console.log(chalk.red(`❌ Replay failed: HTTP ${data.statusCode} (${data.errorMessage || 'Target rejected'})\n`));
           process.exitCode = 1;
         }
       } else {
