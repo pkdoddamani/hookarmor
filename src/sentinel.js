@@ -63,8 +63,8 @@ function assessDisablementRisk(endpoint) {
         cutoff,
         remaining,
         streakHours,
-        alertTitle: 'CRITICAL: Shopify Webhook Deletion Imminent',
-        message: `Shopify will permanently DELETE this webhook after 19 consecutive failures! Only ${remaining} failure${remaining === 1 ? '' : 's'} remaining.`
+        alertTitle: 'CRITICAL: Destination App Down (Shopify Cutoff Risk)',
+        message: `Destination app delivery streak failing (${consecutiveFailures} failures). HookArmor is holding events in DLQ to prevent permanent deletion (Shopify cutoff at 19 failures, ${remaining} remaining).`
       };
     }
     if (consecutiveFailures >= 10) {
@@ -76,8 +76,8 @@ function assessDisablementRisk(endpoint) {
         cutoff,
         remaining,
         streakHours,
-        alertTitle: 'DANGER: Shopify Webhook Approaching Cutoff',
-        message: `Shopify webhook has failed 10+ consecutive times (${remaining} failures remaining before deletion).`
+        alertTitle: 'DANGER: Destination App Failing (Shopify DLQ Streak 10+)',
+        message: `Destination app has failed 10+ consecutive deliveries (${remaining} failures remaining before Shopify cutoff). Events buffered in DLQ.`
       };
     }
     if (consecutiveFailures >= 5) {
@@ -90,7 +90,7 @@ function assessDisablementRisk(endpoint) {
         remaining,
         streakHours,
         alertTitle: 'WARNING: Shopify Webhook Delivery Streak Failing',
-        message: `Shopify webhook has failed 5 consecutive times (${remaining} failures remaining before deletion).`
+        message: `Destination app has failed 5 consecutive deliveries (${remaining} failures remaining before Shopify cutoff). Events buffered in DLQ.`
       };
     }
 
@@ -120,8 +120,8 @@ function assessDisablementRisk(endpoint) {
         cutoffHours,
         hoursRemaining,
         streakHours,
-        alertTitle: 'CRITICAL: Razorpay Webhook Auto-Disablement Imminent',
-        message: `Razorpay will automatically DISABLE this webhook after 24 hours of failure! Approximately ${hoursRemaining}h remaining before disablement.`
+        alertTitle: 'CRITICAL: Destination App Down (Razorpay 24h Cutoff Risk)',
+        message: `Destination app has failed deliveries for ${streakHours}h (${consecutiveFailures} failures). HookArmor is holding events in DLQ to prevent Razorpay 24h auto-disablement (~${hoursRemaining}h remaining).`
       };
     }
     if (streakHours >= 6 || consecutiveFailures >= 10) {
@@ -133,8 +133,8 @@ function assessDisablementRisk(endpoint) {
         cutoffHours,
         hoursRemaining,
         streakHours,
-        alertTitle: 'DANGER: Razorpay Webhook Failing Continuously',
-        message: `Razorpay webhook has been failing for ${streakHours}h (${consecutiveFailures} failures). Auto-disablement at 24h.`
+        alertTitle: 'DANGER: Destination App Failing (Razorpay Streak ' + streakHours + 'h)',
+        message: `Destination app delivery failing for ${streakHours}h (${consecutiveFailures} failures). HookArmor is buffering events in DLQ.`
       };
     }
     if (streakHours >= 1 || consecutiveFailures >= 5) {
@@ -147,7 +147,7 @@ function assessDisablementRisk(endpoint) {
         hoursRemaining,
         streakHours,
         alertTitle: 'WARNING: Razorpay Webhook Failures Detected',
-        message: `Razorpay webhook has experienced ${consecutiveFailures} consecutive delivery failures.`
+        message: `Destination app has experienced ${consecutiveFailures} consecutive delivery failures. HookArmor is buffering events in DLQ.`
       };
     }
 

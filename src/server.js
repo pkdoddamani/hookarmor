@@ -370,6 +370,14 @@ function createServer(options = {}) {
         const parsed = JSON.parse(rawBody);
         eventType = parsed.type;
       } catch (e) {}
+    } else if (headers['x-razorpay-signature'] || headers['x-razorpay-event-id']) {
+      provider = 'razorpay';
+      if (headers['x-razorpay-event-id']) idempotencyKey = headers['x-razorpay-event-id'];
+      try {
+        const parsed = JSON.parse(rawBody);
+        eventType = parsed.event || parsed.type || null;
+        if (!idempotencyKey && parsed.event_id) idempotencyKey = parsed.event_id;
+      } catch (e) {}
     } else {
       try {
         const parsed = JSON.parse(rawBody);

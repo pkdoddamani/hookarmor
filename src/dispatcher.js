@@ -150,7 +150,22 @@ class Dispatcher extends EventEmitter {
         return { valid: true };
       }
 
-      return { valid: false, reason: 'Endpoint has a secret but the request carries no supported signature (Stripe, Shopify, GitHub, Svix/Clerk)' };
+      if (provider === 'razorpay') {
+        const sig = headers['x-razorpay-signature'];
+        if (!sig) return { valid: false, reason: 'Missing X-Razorpay-Signature header' };
+
+        const expectedSig = crypto
+          .createHmac('sha256', secret)
+          .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'))
+          .digest('hex');
+
+        if (!safeEqual(expectedSig, sig)) {
+          return { valid: false, reason: 'Razorpay signature mismatch' };
+        }
+        return { valid: true };
+      }
+
+      return { valid: false, reason: 'Endpoint has a secret but the request carries no supported signature (Stripe, Shopify, GitHub, Svix/Clerk, Razorpay)' };
     } catch (err) {
       return { valid: false, reason: err.message };
     }
@@ -185,6 +200,12 @@ class Dispatcher extends EventEmitter {
         const freshTimestamp = String(Math.floor(Date.now() / 1000));
         modified['svix-timestamp'] = freshTimestamp;
         modified['svix-signature'] = `v1,${svixSignature(secret, modified['svix-id'], freshTimestamp, rawBody)}`;
+      } else if (provider === 'razorpay') {
+        const freshSig = crypto
+          .createHmac('sha256', secret)
+          .update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8'))
+          .digest('hex');
+        modified['x-razorpay-signature'] = freshSig;
       }
     } catch (e) {}
 
@@ -321,7 +342,9 @@ class Dispatcher extends EventEmitter {
         'svix-id',
         'svix-signature',
         'svix-timestamp',
-        'clerk-signature'
+        'clerk-signature',
+        'x-razorpay-signature',
+        'x-razorpay-event-id'
       ]) {
         delete headers[h];
       }

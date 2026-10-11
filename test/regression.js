@@ -1860,6 +1860,83 @@ test('Sentinel N13: claimAlertLevelEscalation enforces atomic CAS against concur
   }
 });
 
+test('N14: razorpay scheme verifies HMAC-SHA256 signature, accepts traffic, and re-signs on delivery', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  const SECRET = 'whsec_rzp_test_99999';
+  try {
+    ha.storage.createEndpoint({
+      id: 'ep_rzp_reg',
+      name: 'Razorpay Reg Endpoint',
+      targetUrl: target.url,
+      provider: 'razorpay',
+      secret: SECRET
+    });
+
+    const payload = JSON.stringify({
+      entity: 'event',
+      account_id: 'acc_123',
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_123' } } }
+    });
+    const validSig = crypto.createHmac('sha256', SECRET).update(payload).digest('hex');
+
+    // 1. Valid signature passes and returns 200 (not 400 mismatch)
+    const resValid = await fetch(`${ha.base}/in/ep_rzp_reg`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Razorpay-Signature': validSig,
+        'X-Razorpay-Event-Id': 'evt_rzp_reg_1'
+      },
+      body: payload
+    });
+    assert.strictEqual(resValid.status, 200);
+
+    const delivered = await waitFor(() => target.requests[0]);
+    assert.ok(delivered, 'Target must receive request');
+    assert.strictEqual(delivered.headers['x-razorpay-event-id'], 'evt_rzp_reg_1');
+    assert.strictEqual(delivered.headers['x-razorpay-signature'], validSig);
+
+    // 2. Invalid signature is rejected with 400
+    const resInvalid = await fetch(`${ha.base}/in/ep_rzp_reg`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Razorpay-Signature': 'bogus_sig',
+        'X-Razorpay-Event-Id': 'evt_rzp_reg_2'
+      },
+      body: payload
+    });
+    assert.strictEqual(resInvalid.status, 400);
+
+    // 3. Unverified Razorpay event strips provider signature (N9)
+    ha.storage.createEndpoint({
+      id: 'ep_rzp_unsec',
+      name: 'Razorpay Unsecured',
+      targetUrl: target.url
+    });
+    target.requests.length = 0;
+    const resUnsec = await fetch(`${ha.base}/in/ep_rzp_unsec`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Razorpay-Signature': validSig,
+        'X-Razorpay-Event-Id': 'evt_rzp_reg_3'
+      },
+      body: payload
+    });
+    assert.strictEqual(resUnsec.status, 200);
+    const unsecDelivered = await waitFor(() => target.requests[0]);
+    assert.ok(unsecDelivered);
+    assert.strictEqual(unsecDelivered.headers['x-razorpay-signature'], undefined, 'Must strip signature on unverified event');
+    assert.strictEqual(unsecDelivered.headers['x-hookarmor-unverified'], 'true');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {
