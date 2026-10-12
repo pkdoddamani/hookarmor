@@ -2,6 +2,18 @@ const http = require('http');
 const https = require('https');
 const { checkUrl, guardedLookup } = require('./netguard');
 
+// Alerts go to third-party chat tools: show only the destination origin. Credentials, path segments
+// (e.g. /services/T000/B000/<token>) and query strings often carry secrets.
+function safeUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    const hasMore = (u.pathname && u.pathname !== '/') || u.search;
+    return `${u.protocol}//${u.host}${hasMore ? '/…' : ''}`;
+  } catch (_) {
+    return '[invalid URL]';
+  }
+}
+
 class Alerter {
   static async _dispatchPost(alertWebhookUrl, payload, strictSSRF = false) {
     try {
@@ -49,7 +61,7 @@ class Alerter {
           title: `Event: ${event.event_type || 'Unknown'} (${event.id})`,
           fields: [
             { title: 'Endpoint', value: endpoint.name, short: true },
-            { title: 'Target URL', value: endpoint.target_url, short: true },
+            { title: 'Target URL', value: safeUrl(endpoint.target_url), short: true },
             { title: 'Status Code', value: String(attempt.statusCode || 'Timeout/Error'), short: true },
             { title: 'Attempt', value: `${event.attempts + 1} / ${endpoint.max_retries}`, short: true },
             { title: 'Error', value: attempt.errorMessage || 'Unknown error', short: false }
@@ -61,7 +73,7 @@ class Alerter {
       embeds: [
         {
           title: `🚨 Webhook Delivery Failed: ${endpoint.name}`,
-          description: `**Event:** \`${event.event_type || event.id}\`\n**Target:** \`${endpoint.target_url}\`\n**HTTP Status:** \`${attempt.statusCode || 'Error'}\`\n**Error:** ${attempt.errorMessage || 'No response'}`,
+          description: `**Event:** \`${event.event_type || event.id}\`\n**Target:** \`${safeUrl(endpoint.target_url)}\`\n**HTTP Status:** \`${attempt.statusCode || 'Error'}\`\n**Error:** ${attempt.errorMessage || 'No response'}`,
           color: 14689316,
           timestamp: new Date().toISOString()
         }
@@ -96,7 +108,7 @@ class Alerter {
             { title: 'Provider', value: (risk.provider || 'generic').toUpperCase(), short: true },
             { title: 'Consecutive Failures', value: `${risk.consecutiveFailures}`, short: true },
             { title: 'Cutoff Policy', value: risk.cutoff ? `${risk.cutoff} failures (Remaining: ${risk.remaining})` : (risk.cutoffHours ? `24h (Remaining: ~${risk.hoursRemaining}h)` : 'Retries failing'), short: true },
-            { title: 'Target Destination', value: endpoint.target_url, short: false }
+            { title: 'Target Destination', value: safeUrl(endpoint.target_url), short: false }
           ],
           footer: 'HookArmor Disablement Sentinel',
           ts: Math.floor(Date.now() / 1000)
@@ -105,7 +117,7 @@ class Alerter {
       embeds: [
         {
           title: `🚨 ${risk.alertTitle}`,
-          description: `**${risk.message}**\n\n• **Endpoint:** \`${endpoint.name}\` (\`${endpoint.id}\`)\n• **Provider:** \`${(risk.provider || 'generic').toUpperCase()}\`\n• **Consecutive Failures:** \`${risk.consecutiveFailures}\`\n• **Target:** \`${endpoint.target_url}\``,
+          description: `**${risk.message}**\n\n• **Endpoint:** \`${endpoint.name}\` (\`${endpoint.id}\`)\n• **Provider:** \`${(risk.provider || 'generic').toUpperCase()}\`\n• **Consecutive Failures:** \`${risk.consecutiveFailures}\`\n• **Target:** \`${safeUrl(endpoint.target_url)}\``,
           color: discordColor,
           timestamp: new Date().toISOString()
         }
@@ -127,7 +139,7 @@ class Alerter {
         {
           color: '#16a34a',
           title: `Endpoint Recovered: ${endpoint.name}`,
-          text: `Webhook deliveries to ${endpoint.target_url} are succeeding (HTTP 200 OK). Failure streak cleared.`,
+          text: `Webhook deliveries to ${safeUrl(endpoint.target_url)} are succeeding (HTTP 200 OK). Failure streak cleared.`,
           footer: 'HookArmor Disablement Sentinel',
           ts: Math.floor(Date.now() / 1000)
         }
@@ -135,7 +147,7 @@ class Alerter {
       embeds: [
         {
           title: `✅ Endpoint Recovered: ${endpoint.name}`,
-          description: `Deliveries to \`${endpoint.target_url}\` are succeeding again (HTTP 200 OK). Consecutive failure counter has been reset to 0.`,
+          description: `Deliveries to \`${safeUrl(endpoint.target_url)}\` are succeeding again (HTTP 200 OK). Consecutive failure counter has been reset to 0.`,
           color: 1483690,
           timestamp: new Date().toISOString()
         }
@@ -145,5 +157,7 @@ class Alerter {
     return Alerter._dispatchPost(alertWebhookUrl, payload, strictSSRF);
   }
 }
+
+Alerter.safeUrl = safeUrl;
 
 module.exports = Alerter;

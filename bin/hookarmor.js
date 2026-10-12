@@ -70,13 +70,17 @@ function startServerOrExit() {
   }
 }
 
-function setupGracefulShutdown(server, dispatcher, storage, instanceId) {
+function setupGracefulShutdown(server, dispatcher, storage, instanceId, worker) {
   let shuttingDown = false;
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(chalk.yellow(`\n⏻  ${signal} received: stopping incoming traffic and draining in-flight webhooks...`));
+    // Stop claiming new retries now: server 'close' only fires after keep-alive and WebSocket
+    // connections end, so relying on it lets the worker keep starting deliveries during the drain
+    if (worker) worker.stop();
     server.close();
+    if (server.closeIdleConnections) server.closeIdleConnections();
     if (dispatcher && dispatcher.drain) {
       const clean = await dispatcher.drain(15000);
       if (!clean) {
@@ -124,8 +128,8 @@ program
   .action((options) => {
     const port = parseInt(options.port, 10);
     const host = options.host;
-    const { server, storage, dispatcher, mockEnabled, instanceId } = startServerOrExit();
-    setupGracefulShutdown(server, dispatcher, storage, instanceId);
+    const { server, storage, dispatcher, worker, mockEnabled, instanceId } = startServerOrExit();
+    setupGracefulShutdown(server, dispatcher, storage, instanceId, worker);
 
     // Ensure a default mock endpoint exists for first-time onboarding (local simulation only)
     if (mockEnabled && !storage.getEndpoint('demo-stripe')) {
@@ -133,7 +137,8 @@ program
         id: 'demo-stripe',
         name: 'Stripe Payments Demo',
         targetUrl: `http://localhost:${port}/mock/target`,
-        provider: 'stripe',
+        // Not pinned: the dashboard simulator also sends Shopify and GitHub templates here
+        provider: null,
         alertWebhookUrl: '',
         autoRetry: 1,
         maxRetries: 5
@@ -168,8 +173,8 @@ program
     if (host === '0.0.0.0') {
       console.warn(chalk.yellow('\n[Security Warning] hookarmor listen is bound to 0.0.0.0 — reachable by anyone on your local network. Use 127.0.0.1 for local isolation.'));
     }
-    const { server, storage, dispatcher, instanceId } = startServerOrExit();
-    setupGracefulShutdown(server, dispatcher, storage, instanceId);
+    const { server, storage, dispatcher, worker, instanceId } = startServerOrExit();
+    setupGracefulShutdown(server, dispatcher, storage, instanceId, worker);
 
     storage.createEndpoint({
       id: options.endpoint,
@@ -432,21 +437,21 @@ const endpointsCmd = program
 
 endpointsCmd
   .command('add')
-  .description('Create or update an endpoint')
+  .description('Create or update an endpoint (options you omit keep their stored values)')
   .requiredOption('-i, --id <id>', 'Unique endpoint ID slug')
   .requiredOption('-t, --target <url>', 'Destination URL')
   .option('-n, --name <name>', 'Descriptive endpoint name')
   .option('-s, --secret <secret>', 'Provider signing secret')
-  .option('-p, --provider <provider>', 'Provider scheme (stripe, shopify, razorpay, svix, generic)')
+  .option('-p, --provider <provider>', 'Provider scheme (stripe, shopify, github, razorpay, svix/clerk, generic)')
   .option('-a, --alert <url>', 'Alert webhook URL')
   .option('--headers <json>', 'Custom destination headers JSON string')
-  .option('--max-retries <num>', 'Maximum retry attempts', '5')
-  .option('--concurrency <num>', 'Concurrency limit', '5')
+  .option('--max-retries <num>', 'Maximum retry attempts (default 5 for new endpoints)')
+  .option('--concurrency <num>', 'Concurrency limit (default 5 for new endpoints)')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
   .option('-k, --api-key <key>', 'Admin API key', process.env.HOOKARMOR_API_KEY)
   .action(async (options) => {
     const baseUrl = options.url.replace(/\/$/, '');
-    let customHeaders = {};
+    let customHeaders;
     if (options.headers) {
       try {
         customHeaders = JSON.parse(options.headers);
@@ -456,18 +461,23 @@ endpointsCmd
         return;
       }
     }
+    // Only send what the user passed, so updating one field does not reset the others
     const payload = {
       id: options.id,
-      name: options.name || options.id,
+      name: options.name,
       targetUrl: options.target,
       secret: options.secret,
       provider: options.provider,
       alertWebhookUrl: options.alert,
-      maxRetries: parseInt(options.maxRetries, 10),
-      concurrencyLimit: parseInt(options.concurrency, 10),
+      maxRetries: options.maxRetries !== undefined ? parseInt(options.maxRetries, 10) : undefined,
+      concurrencyLimit: options.concurrency !== undefined ? parseInt(options.concurrency, 10) : undefined,
       customHeaders
     };
     try {
+      if (!payload.name) {
+        const existing = await fetch(`${baseUrl}/api/endpoints/${encodeURIComponent(options.id)}`, { headers: apiHeaders(options.apiKey) });
+        if (existing.status === 404) payload.name = options.id;
+      }
       const res = await fetch(`${baseUrl}/api/endpoints`, {
         method: 'POST',
         headers: apiHeaders(options.apiKey),
@@ -518,16 +528,21 @@ endpointsCmd
 
 endpointsCmd
   .command('rm <id>')
-  .description('Delete an endpoint and its events')
+  .description('Delete an endpoint (refuses while it still has pending or failed events unless --force)')
+  .option('-f, --force', 'Also permanently delete pending and failed (dead-letter) events')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
   .option('-k, --api-key <key>', 'Admin API key', process.env.HOOKARMOR_API_KEY)
   .action(async (id, options) => {
     const baseUrl = options.url.replace(/\/$/, '');
     try {
-      const res = await fetch(`${baseUrl}/api/endpoints/${encodeURIComponent(id)}`, {
+      const res = await fetch(`${baseUrl}/api/endpoints/${encodeURIComponent(id)}${options.force ? '?force=true' : ''}`, {
         method: 'DELETE',
         headers: apiHeaders(options.apiKey)
       });
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(`endpoint still holds ${data.pendingCount || 0} pending and ${data.failedCount || 0} failed event(s); replay them first or pass --force to discard them`);
+      }
       await readJson(res);
       console.log(chalk.green(`✅ Endpoint '${id}' and its history deleted.`));
     } catch (err) {

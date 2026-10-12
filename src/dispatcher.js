@@ -24,6 +24,25 @@ function svixSignature(secret, msgId, timestamp, rawBody) {
   return hmac.digest('base64');
 }
 
+// Canonical provider names used for scheme pinning. 'generic' and '' mean "not pinned".
+const PROVIDER_ALIASES = {
+  stripe: 'stripe',
+  shopify: 'shopify',
+  github: 'github',
+  razorpay: 'razorpay',
+  svix: 'clerk/svix',
+  clerk: 'clerk/svix',
+  'clerk/svix': 'clerk/svix'
+};
+
+// Returns the canonical provider, null for "not pinned", or undefined for an unknown name
+function normalizeProvider(provider) {
+  if (provider === undefined || provider === null) return null;
+  const p = String(provider).trim().toLowerCase();
+  if (p === '' || p === 'generic' || p === 'none' || p === 'auto') return null;
+  return PROVIDER_ALIASES[p];
+}
+
 const STRIPPED_INBOUND_HEADERS = new Set([
   'forwarded',
   'x-real-ip',
@@ -50,10 +69,24 @@ class Dispatcher extends EventEmitter {
     this.inFlightCount = new Map();
     this.waitQueues = new Map();
     this.defaultTimeoutMs = options.defaultTimeoutMs || 25000;
+    // Hard cap on one delivery, so a destination that trickles bytes cannot hold a slot forever
+    this.maxDeliveryMs = options.maxDeliveryMs || this.defaultTimeoutMs * 2;
     this.strictSSRF = Boolean(options.strictSSRF);
     this.signingSecret = options.signingSecret || null;
     this.instanceId = options.instanceId || null;
     this.activeDeliveries = 0;
+    // Event ids this process holds in memory (queued or in flight); the worker renews their leases
+    this.heldEvents = new Set();
+  }
+
+  heldEventIds() {
+    return [...this.heldEvents];
+  }
+
+  // Deliveries waiting for a concurrency slot on one endpoint
+  queuedFor(endpointId) {
+    const q = this.waitQueues.get(endpointId);
+    return q ? q.length : 0;
   }
 
   // Verify signature at ingress (preventing HookArmor from acting as an open signature oracle).
@@ -266,14 +299,18 @@ class Dispatcher extends EventEmitter {
   // Callers must have claimed the event (status 'replaying') before dispatching
   async dispatch(event, endpoint, { replay = false } = {}) {
     const limit = endpoint.concurrency_limit || this.defaultConcurrency;
-    await this.acquireSlot(endpoint.id, limit);
-    this.activeDeliveries++;
-
+    this.heldEvents.add(event.id);
     try {
-      return await this._executeDispatch(event, endpoint, replay);
+      await this.acquireSlot(endpoint.id, limit);
+      this.activeDeliveries++;
+      try {
+        return await this._executeDispatch(event, endpoint, replay);
+      } finally {
+        this.activeDeliveries = Math.max(0, this.activeDeliveries - 1);
+        this.releaseSlot(endpoint.id, limit);
+      }
     } finally {
-      this.activeDeliveries = Math.max(0, this.activeDeliveries - 1);
-      this.releaseSlot(endpoint.id, limit);
+      this.heldEvents.delete(event.id);
     }
   }
 
@@ -385,11 +422,13 @@ class Dispatcher extends EventEmitter {
 
     return new Promise((resolve) => {
       let settled = false;
+      let deadlineTimer = null;
 
       // Single exit point: every outcome records exactly one attempt and resolves exactly once
       const finish = async ({ statusCode = 0, responseBody = '', errorMessage = '' }) => {
         if (settled) return;
         settled = true;
+        if (deadlineTimer) clearTimeout(deadlineTimer);
 
         const latencyMs = Date.now() - startTime;
         const isSuccess = statusCode >= 200 && statusCode < 300;
@@ -483,6 +522,10 @@ class Dispatcher extends EventEmitter {
       };
 
       try {
+        if (event.body_unreadable) {
+          finish({ errorMessage: 'Event body cannot be decrypted with the configured HOOKARMOR_ENCRYPTION_KEY; not delivered' });
+          return;
+        }
         const check = checkUrl(targetUrl, this.strictSSRF);
         if (!check.ok) {
           finish({ errorMessage: `Delivery blocked: ${check.reason}` });
@@ -519,6 +562,10 @@ class Dispatcher extends EventEmitter {
         req.on('timeout', () => {
           req.destroy(new Error(`Connection timed out after ${this.defaultTimeoutMs}ms`));
         });
+        deadlineTimer = setTimeout(() => {
+          req.destroy(new Error(`Delivery exceeded ${this.maxDeliveryMs}ms`));
+        }, this.maxDeliveryMs);
+        if (deadlineTimer.unref) deadlineTimer.unref();
 
         req.on('error', (err) => finish({ errorMessage: err.message }));
         req.on('close', () => {
@@ -585,5 +632,8 @@ class Dispatcher extends EventEmitter {
     return { replayedCount: claimed.length, eventIds: claimed, remaining: this.storage.countFailed(endpointId) };
   }
 }
+
+Dispatcher.normalizeProvider = normalizeProvider;
+Dispatcher.KNOWN_PROVIDERS = ['stripe', 'shopify', 'github', 'clerk/svix', 'razorpay'];
 
 module.exports = Dispatcher;

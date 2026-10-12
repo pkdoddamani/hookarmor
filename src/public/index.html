@@ -523,11 +523,11 @@
             <div class="form-group">
               <label>Provider Scheme</label>
               <select id="inp-ep-provider" class="form-control">
-                <option value="generic">Generic (Standard HTTP)</option>
+                <option value="generic">Auto-detect / Generic</option>
                 <option value="shopify">Shopify (19-failure deletion protection)</option>
                 <option value="razorpay">Razorpay (24h auto-disable protection)</option>
                 <option value="stripe">Stripe</option>
-                <option value="svix">Svix / Clerk</option>
+                <option value="clerk/svix">Svix / Clerk</option>
                 <option value="github">GitHub</option>
               </select>
             </div>
@@ -1037,7 +1037,7 @@
           const badgeClass = evt.status === 'delivered' ? 'badge-delivered' : (evt.status === 'failed' ? 'badge-failed' : 'badge-pending');
           const time = new Date(evt.created_at).toLocaleTimeString();
           const latency = evt.last_latency_ms ? `${evt.last_latency_ms}ms` : '-';
-          const providerClass = String(evt.provider || '').includes('stripe') ? 'stripe' : (evt.provider.includes('shopify') ? 'shopify' : (evt.provider.includes('github') ? 'github' : ''));
+          const providerClass = String(evt.provider || '').includes('stripe') ? 'stripe' : (String(evt.provider || '').includes('shopify') ? 'shopify' : (String(evt.provider || '').includes('github') ? 'github' : ''));
 
           return `
             <tr>
@@ -1262,7 +1262,11 @@
           headers,
           body: payloadStr
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(`Webhook rejected (HTTP ${res.status}): ${data.error || 'unknown error'}${data.reason ? ' - ' + data.reason : ''}`);
+          return;
+        }
         closeSimulatorModal();
         setTimeout(async () => {
           await loadStats();
@@ -1306,7 +1310,7 @@
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
       if (btn.dataset.action === 'inspect') inspectEvent(btn.dataset.id);
-      if (btn.dataset.action === 'replay') replayEvent(btn.dataset.id);
+      if (btn.dataset.action === 'replay' && confirm(`Replay event ${btn.dataset.id}?\n\nThis sends the webhook to its destination again and may repeat side effects (charges, emails, fulfilment).`)) replayEvent(btn.dataset.id);
     });
 
     // Startup

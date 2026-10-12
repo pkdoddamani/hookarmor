@@ -15,6 +15,11 @@ const { assessDisablementRisk } = require('./sentinel');
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const ENDPOINT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+// These providers sign the body only: the delivery id header (X-Shopify-Webhook-Id,
+// X-GitHub-Delivery, X-Razorpay-Event-Id) and the time are unsigned, so a captured request
+// can be re-sent under a fresh id. For them, a verified body seen recently is treated as a duplicate.
+const BODY_ONLY_SIGNATURE_PROVIDERS = new Set(['shopify', 'github', 'razorpay']);
+
 const SENSITIVE_INBOUND_HEADERS = new Set([
   'authorization',
   'proxy-authorization',
@@ -71,6 +76,40 @@ function createRateLimiter({ limit, windowMs }) {
   };
 }
 
+// Headers HookArmor sets itself or that would corrupt the outbound request
+const RESERVED_CUSTOM_HEADERS = new Set([
+  'host', 'content-length', 'content-type', 'transfer-encoding', 'connection', 'expect', 'te', 'upgrade',
+  'stripe-signature', 'x-shopify-hmac-sha256', 'x-hub-signature', 'x-hub-signature-256',
+  'svix-id', 'svix-timestamp', 'svix-signature', 'x-razorpay-signature'
+]);
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/;
+
+// Returns { headers } or { error } for a customHeaders value from the API
+function validateCustomHeaders(value) {
+  if (value === undefined) return { headers: undefined };
+  if (value === null) return { headers: {} };
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return { error: 'customHeaders must be a JSON object of header name to string value' };
+  }
+  const entries = Object.entries(value);
+  if (entries.length > 20) return { error: 'customHeaders may contain at most 20 headers' };
+  const clean = {};
+  for (const [name, v] of entries) {
+    const lower = name.toLowerCase();
+    if (!HEADER_NAME_PATTERN.test(name)) return { error: `customHeaders: invalid header name "${name}"` };
+    if (RESERVED_CUSTOM_HEADERS.has(lower) || lower.startsWith('x-hookarmor-') || lower.startsWith('x-forwarded-')) {
+      return { error: `customHeaders: "${name}" is set by HookArmor and cannot be overridden` };
+    }
+    if (typeof v !== 'string' && typeof v !== 'number') return { error: `customHeaders: value of "${name}" must be a string` };
+    const str = String(v);
+    if (str.length > 4096 || /[^\t\x20-\x7e\x80-\xff]/.test(str)) {
+      return { error: `customHeaders: value of "${name}" contains characters not allowed in an HTTP header` };
+    }
+    clean[name] = str;
+  }
+  return { headers: clean };
+}
+
 function publicEndpoint(ep) {
   if (!ep) return ep;
   const { secret, custom_headers, ...rest } = ep;
@@ -119,6 +158,20 @@ function createServer(options = {}) {
     ? options.maxPendingEvents
     : clampInt(process.env.HOOKARMOR_MAX_PENDING_EVENTS, 50000, 100, 1000000);
 
+  // Deliveries waiting in memory per endpoint before new events are parked in SQLite for the worker
+  const maxQueuedPerEndpoint = options.maxQueuedPerEndpoint !== undefined
+    ? options.maxQueuedPerEndpoint
+    : clampInt(process.env.HOOKARMOR_MAX_QUEUED_IN_MEMORY, 1000, 10, 100000);
+
+  // Marketing landing page at '/' (hosted Railway/Render deployments or HOOKARMOR_SERVE_LANDING=true)
+  const serveLanding = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.HOOKARMOR_SERVE_LANDING === 'true') &&
+    process.env.HOOKARMOR_SERVE_LANDING !== 'false';
+  // The public waitlist signup only exists where the landing page is served, so self-hosted
+  // instances do not accept anonymous database writes
+  const waitlistEnabled = options.enableWaitlist !== undefined
+    ? options.enableWaitlist
+    : (envFlag('HOOKARMOR_ENABLE_WAITLIST') !== undefined ? envFlag('HOOKARMOR_ENABLE_WAITLIST') : serveLanding);
+
   if (isProduction && !apiKey && !allowNoAuth) {
     throw new Error(
       'HOOKARMOR_API_KEY is required in production: without it the management API (events, endpoints, replays) is open to anyone. ' +
@@ -151,8 +204,13 @@ function createServer(options = {}) {
   if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10) : trustProxy);
 
   const storage = new Storage(options.dbPath, {
-    encryptionKey: options.encryptionKey || process.env.HOOKARMOR_ENCRYPTION_KEY
+    encryptionKey: options.encryptionKey || process.env.HOOKARMOR_ENCRYPTION_KEY,
+    encryptBodies: options.encryptBodies
   });
+  // Replay window for body-only-signature providers (0 disables)
+  const bodyDedupeHours = options.bodyDedupeHours !== undefined
+    ? options.bodyDedupeHours
+    : clampInt(process.env.HOOKARMOR_BODY_DEDUPE_HOURS, 24, 0, 24 * 30);
 
   const instanceId = options.instanceId || `inst_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   storage.registerInstance({
@@ -161,13 +219,24 @@ function createServer(options = {}) {
     pid: process.pid
   });
 
-  const recovered = storage.recoverInterruptedDeliveries(instanceId);
+  const recovered = storage.recoverInterruptedDeliveries();
   if (recovered > 0) {
     console.warn(`[HookArmor] Re-queued ${recovered} event(s) that were mid-delivery when the process last stopped.`);
   }
 
+  // (2) Turning on HOOKARMOR_ENCRYPT_BODIES also encrypts bodies stored before it was enabled
+  const encryptedExisting = storage.encryptExistingBodies();
+  if (encryptedExisting > 0) {
+    console.warn(`[HookArmor] Encrypted ${encryptedExisting} previously stored event bod${encryptedExisting === 1 ? 'y' : 'ies'} at rest.`);
+  }
+
   // Fail-fast verification: ensure all endpoint secrets can be read with the active encryption key
-  storage.assertSecretsReadable(Boolean(process.env.HOOKARMOR_ALLOW_UNREADABLE_SECRETS === 'true'));
+  try {
+    storage.assertSecretsReadable(Boolean(process.env.HOOKARMOR_ALLOW_UNREADABLE_SECRETS === 'true'));
+  } catch (err) {
+    storage.close();
+    throw err;
+  }
 
   // Security audit check: warn about endpoints without secrets on startup
   try {
@@ -182,6 +251,7 @@ function createServer(options = {}) {
   const dispatcher = new Dispatcher(storage, {
     defaultConcurrency: options.defaultConcurrency || 5,
     defaultTimeoutMs: options.defaultTimeoutMs || 25000,
+    maxDeliveryMs: options.maxDeliveryMs,
     strictSSRF,
     signingSecret: options.signingSecret || process.env.HOOKARMOR_SIGNING_SECRET || null,
     instanceId
@@ -190,7 +260,9 @@ function createServer(options = {}) {
   const worker = new RetryWorker(storage, dispatcher, {
     intervalMs: options.retryIntervalMs || 5000,
     retentionDays,
-    instanceId
+    instanceId,
+    maxQueuedPerEndpoint: maxQueuedPerEndpoint,
+    batchSize: options.retryBatchSize || clampInt(process.env.HOOKARMOR_RETRY_BATCH_SIZE, 200, 1, 5000)
   });
   if (options.autoStartWorker !== false) {
     worker.start();
@@ -389,8 +461,10 @@ function createServer(options = {}) {
     if (eventType) eventType = eventType.slice(0, 200);
     if (idempotencyKey) idempotencyKey = String(idempotencyKey).slice(0, 255);
 
-    // Provider scheme pinning check (F-03)
-    if (endpoint.provider && provider !== endpoint.provider) {
+    // Provider scheme pinning check (F-03). 'generic' and aliases such as 'svix' are normalised,
+    // so rows saved by older dashboards/CLIs ('generic', 'svix') do not reject valid traffic.
+    const pinnedProvider = Dispatcher.normalizeProvider(endpoint.provider);
+    if (pinnedProvider !== null && provider !== pinnedProvider) {
       return res.status(400).json({
         error: `Signature scheme mismatch: endpoint is configured for ${endpoint.provider}, but received ${provider}`,
         provider,
@@ -411,7 +485,7 @@ function createServer(options = {}) {
       }
       verified = true;
       // Auto-pin provider scheme on first verified event (closes F-03 scheme mix-up on unconfigured endpoints)
-      if (!endpoint.provider && provider && provider !== 'generic') {
+      if (pinnedProvider === null && provider && provider !== 'generic') {
         try {
           storage.db.prepare('UPDATE endpoints SET provider = ? WHERE id = ?').run(provider, endpoint.id);
           endpoint.provider = provider;
@@ -423,6 +497,8 @@ function createServer(options = {}) {
     }
 
     let savedEvent;
+    let parked = false;
+    let newEventId = null;
     try {
       // Deduplication: if HookArmor already holds this event, ack without creating a second delivery
       if (idempotencyKey) {
@@ -441,14 +517,32 @@ function createServer(options = {}) {
             });
           } else {
             // Unverified payload collision: do not suppress. Qualify idempotency key so both events persist.
-            idempotencyKey = `${idempotencyKey}_collision_${Date.now()}`;
+            idempotencyKey = `${idempotencyKey}_collision_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
           }
         }
       }
 
-      const eventId = `evt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+      const bodyHash = storage.hashBody(rawBodyBuffer, provider, eventType);
+      if (verified && bodyDedupeHours > 0 && BODY_ONLY_SIGNATURE_PROVIDERS.has(provider)) {
+        const sameBody = storage.findRecentEventByBodyHash(endpoint.id, bodyHash, bodyDedupeHours);
+        if (sameBody) {
+          return res.status(200).json({
+            received: true,
+            hookarmor_id: sameBody.id,
+            status: 'deduplicated',
+            message: `Identical signed payload already received within ${bodyDedupeHours}h (current status: ${sameBody.status}). Suppressed duplicate delivery.`
+          });
+        }
+      }
 
-      // 1. Durably save event in SQLite, already claimed for its first delivery
+      const eventId = `evt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+      newEventId = eventId;
+
+      // When the destination is backed up, park the event in SQLite (status 'pending') for the
+      // retry worker instead of holding its body in an unbounded in-memory queue
+      parked = dispatcher.queuedFor(endpoint.id) >= maxQueuedPerEndpoint;
+
+      // 1. Durably save event in SQLite, already claimed for its first delivery unless parked
       // (Sensitive headers are encrypted at rest by storage._writeHeaders)
       savedEvent = storage.saveEvent({
         id: eventId,
@@ -458,9 +552,10 @@ function createServer(options = {}) {
         eventType,
         headers,
         rawBody: rawBodyBuffer,
-        status: 'replaying',
-        claimedBy: instanceId,
-        verified
+        status: parked ? 'pending' : 'replaying',
+        claimedBy: parked ? null : instanceId,
+        verified,
+        bodyHash
       });
     } catch (err) {
       // Not persisted: return an error so the provider keeps its own retry schedule
@@ -483,7 +578,10 @@ function createServer(options = {}) {
       status: 'buffered'
     });
 
-    // 3. Dispatch to target destination asynchronously
+    // 3. Dispatch to target destination asynchronously (parked events are picked up by the worker)
+    // saveEvent returns the existing row when a concurrent writer won the idempotency race;
+    // that row already has its own delivery, so only dispatch the row this request created
+    if (parked || savedEvent.id !== newEventId) return;
     setImmediate(() => {
       dispatcher.dispatch(savedEvent, endpoint).catch((err) => {
         console.error(`[Ingress] Dispatch error for ${savedEvent.id}:`, err);
@@ -497,6 +595,7 @@ function createServer(options = {}) {
   app.use('/api', (req, res, next) => {
     // Public waitlist signup for the landing page (rate limited)
     if (req.path === '/waitlist' && req.method === 'POST') {
+      if (!waitlistEnabled) return res.status(404).json({ error: 'Not found' });
       if (!waitlistLimiter(req.ip)) return res.status(429).json({ error: 'Too many signups from this address; try again later' });
       return next();
     }
@@ -566,13 +665,15 @@ function createServer(options = {}) {
   // Create or Update Endpoint
   app.post('/api/endpoints', (req, res) => {
     const { id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit, customHeaders, custom_headers } = req.body || {};
-    if (!id || !name || !targetUrl) {
-      return res.status(400).json({ error: 'id, name, and targetUrl are required' });
-    }
     if (typeof id !== 'string' || !ENDPOINT_ID_PATTERN.test(id)) {
       return res.status(400).json({ error: 'id must be 1-64 characters: letters, digits, "-" or "_"' });
     }
-    if (typeof name !== 'string' || name.length > 200) {
+    // Updates may omit fields; omitted fields keep their stored values
+    const existing = storage.getEndpoint(id);
+    if (!targetUrl || (!existing && !name)) {
+      return res.status(400).json({ error: 'id, name, and targetUrl are required' });
+    }
+    if (name !== undefined && (typeof name !== 'string' || !name || name.length > 200)) {
       return res.status(400).json({ error: 'name must be a string of at most 200 characters' });
     }
     if (secret !== undefined && (typeof secret !== 'string' || secret.length > 500)) {
@@ -581,9 +682,20 @@ function createServer(options = {}) {
     if (provider !== undefined && provider !== null && (typeof provider !== 'string' || provider.length > 50)) {
       return res.status(400).json({ error: 'provider must be a string of at most 50 characters' });
     }
+    const cleanProvider = provider === undefined ? undefined : Dispatcher.normalizeProvider(provider);
+    if (cleanProvider === undefined && provider !== undefined) {
+      return res.status(400).json({ error: `provider must be one of: generic, ${Dispatcher.KNOWN_PROVIDERS.join(', ')} (svix and clerk are accepted for clerk/svix)` });
+    }
+    const headerCheck = validateCustomHeaders(customHeaders !== undefined ? customHeaders : custom_headers);
+    if (headerCheck.error) {
+      return res.status(400).json({ error: headerCheck.error });
+    }
     const targetCheck = checkUrl(String(targetUrl), strictSSRF);
     if (!targetCheck.ok) {
-      return res.status(400).json({ error: `targetUrl rejected: ${targetCheck.reason} (cloud metadata${strictSSRF ? ', loopback and private network' : ''} addresses are blocked)` });
+      const hint = strictSSRF
+        ? ' Loopback and private-network targets are blocked while HOOKARMOR_STRICT_SSRF is on (the default when NODE_ENV=production, including the Docker image). If HookArmor runs next to your app on a private network, set HOOKARMOR_STRICT_SSRF=false; cloud metadata addresses stay blocked.'
+        : ' Cloud metadata addresses are always blocked.';
+      return res.status(400).json({ error: `targetUrl rejected: ${targetCheck.reason}.${hint}` });
     }
     if (alertWebhookUrl) {
       const alertCheck = checkUrl(String(alertWebhookUrl), strictSSRF);
@@ -591,17 +703,18 @@ function createServer(options = {}) {
         return res.status(400).json({ error: `alertWebhookUrl rejected: ${alertCheck.reason}` });
       }
     }
+    const rawConcurrency = concurrencyLimit !== undefined ? concurrencyLimit : concurrency_limit;
     const endpoint = storage.createEndpoint({
       id,
-      name,
+      name: name !== undefined ? name : existing.name,
       targetUrl: String(targetUrl),
       secret,
-      provider: provider === undefined ? undefined : (provider ? String(provider) : null),
+      provider: cleanProvider,
       alertWebhookUrl: alertWebhookUrl === undefined ? undefined : String(alertWebhookUrl || ''),
-      autoRetry: autoRetry !== undefined ? autoRetry : 1,
-      maxRetries: clampInt(maxRetries, 5, 1, 50),
-      concurrencyLimit: clampInt(concurrencyLimit || concurrency_limit, 5, 1, 100),
-      customHeaders: customHeaders !== undefined ? customHeaders : custom_headers
+      autoRetry: autoRetry !== undefined ? autoRetry : (existing ? existing.auto_retry : 1),
+      maxRetries: clampInt(maxRetries, existing ? existing.max_retries : 5, 1, 50),
+      concurrencyLimit: clampInt(rawConcurrency, existing ? existing.concurrency_limit : 5, 1, 100),
+      customHeaders: headerCheck.headers
     });
     res.json(publicEndpoint(endpoint));
   });
@@ -841,8 +954,7 @@ function createServer(options = {}) {
   // Root Route: Marketing landing page on cloud production (Railway/Render) or when explicitly configured;
   // Dashboard on /dashboard and /app, or on / for local self-hosted instances.
   app.get('/', (req, res) => {
-    const isCloud = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.HOOKARMOR_SERVE_LANDING === 'true');
-    if (isCloud && process.env.HOOKARMOR_SERVE_LANDING !== 'false') {
+    if (serveLanding) {
       return res.sendFile('landing.html', { root: path.join(__dirname, 'public') });
     }
     res.sendFile('index.html', { root: path.join(__dirname, 'public') });

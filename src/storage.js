@@ -45,6 +45,22 @@ function decryptSecret(stored, key) {
   return decrypted.toString('utf8');
 }
 
+// Binary AES-256-GCM envelope for webhook bodies: 12-byte IV | 16-byte tag | ciphertext
+function encryptBody(buffer, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
+}
+
+function decryptBody(buffer, key) {
+  if (!key) throw new Error('Event body is encrypted, but HOOKARMOR_ENCRYPTION_KEY is not configured');
+  if (buffer.length < 28) throw new Error('Malformed encrypted event body');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, buffer.subarray(0, 12));
+  decipher.setAuthTag(buffer.subarray(12, 28));
+  return Buffer.concat([decipher.update(buffer.subarray(28)), decipher.final()]);
+}
+
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
   'proxy-authorization',
@@ -105,6 +121,15 @@ class Storage {
     this.encryptionKey = options.encryptionKey !== undefined
       ? deriveKey(options.encryptionKey)
       : deriveKey(envKey);
+
+    // Opt-in: webhook bodies often carry PII and payment data; this keeps them unreadable to
+    // anyone holding only the SQLite file (backups, volume snapshots)
+    this.encryptBodies = options.encryptBodies !== undefined
+      ? Boolean(options.encryptBodies)
+      : process.env.HOOKARMOR_ENCRYPT_BODIES === 'true';
+    if (this.encryptBodies && !this.encryptionKey) {
+      throw new Error('HOOKARMOR_ENCRYPT_BODIES=true requires HOOKARMOR_ENCRYPTION_KEY');
+    }
 
     if (!this.encryptionKey && !Storage._warnedNoKey && process.env.NODE_ENV !== 'test') {
       console.warn('[Security Warning] HOOKARMOR_ENCRYPTION_KEY is not set. Endpoint secrets are stored in plaintext. Set a 32+ character key to enable AES-256-GCM at-rest encryption.');
@@ -219,6 +244,13 @@ class Storage {
     if (!eventColumns.includes('claimed_at')) {
       this.db.exec('ALTER TABLE events ADD COLUMN claimed_at TEXT');
     }
+    if (!eventColumns.includes('body_encrypted')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN body_encrypted INTEGER DEFAULT 0');
+    }
+    if (!eventColumns.includes('body_hash')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN body_hash TEXT');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_events_body_hash ON events(endpoint_id, body_hash)');
 
     const epColumns = this.db.prepare('PRAGMA table_info(endpoints)').all().map((c) => c.name);
     if (!epColumns.includes('provider')) {
@@ -248,8 +280,9 @@ class Storage {
     } catch (_) {}
   }
 
-  // Upsert. Omitting secret or alertWebhookUrl (undefined) keeps the stored value; '' clears it.
-  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders = {} }) {
+  // Upsert. Omitting secret, alertWebhookUrl or customHeaders (undefined) keeps the stored value; '' / {} clears it.
+  // (customHeaders must not have a destructuring default, or the keep-existing branch below never runs.)
+  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders }) {
     const existing = this.getEndpoint(id);
     const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
     const finalProvider = provider !== undefined ? provider : (existing ? existing.provider : null);
@@ -354,19 +387,81 @@ class Storage {
     return deleteTx(id);
   }
 
+  // Every event row leaves storage through here: headers and body decrypted, body always a Buffer.
+  // A body that cannot be decrypted is flagged (body_unreadable) so it is never delivered as garbage.
+  _mapEvent(row) {
+    if (!row) return null;
+    let rawBody = Buffer.isBuffer(row.raw_body) ? row.raw_body : Buffer.from(String(row.raw_body || ''), 'utf8');
+    let bodyUnreadable = false;
+    if (row.body_encrypted) {
+      try {
+        rawBody = decryptBody(rawBody, this.encryptionKey);
+      } catch (_) {
+        rawBody = Buffer.alloc(0);
+        bodyUnreadable = true;
+      }
+    }
+    const mapped = { ...row, headers: this._readHeaders(row.headers), raw_body: rawBody };
+    if (bodyUnreadable) mapped.body_unreadable = true;
+    return mapped;
+  }
+
+  // Fingerprint of provider + event type (e.g. Shopify topic) + body. The topic is included because
+  // Shopify sends byte-identical bodies for different topics (orders/create and orders/updated).
+  // Keyed with the encryption key when one is set, so the stored hash does not leak guessable bodies.
+  hashBody(rawBody, provider = '', eventType = '') {
+    const buf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+    const h = this.encryptionKey ? crypto.createHmac('sha256', this.encryptionKey) : crypto.createHash('sha256');
+    h.update(`${provider || ''}\0${eventType || ''}\0`);
+    h.update(buf);
+    return h.digest('hex');
+  }
+
+  // Only verified events can suppress a later one, so unsigned traffic sent before a secret was
+  // configured cannot pre-empt a genuine signed event
+  findRecentEventByBodyHash(endpointId, bodyHash, hours) {
+    if (!bodyHash || !hours || hours <= 0) return null;
+    const row = this.db.prepare(`
+      SELECT * FROM events
+      WHERE endpoint_id = ? AND body_hash = ? AND verified = 1 AND created_at >= datetime('now', ?)
+      ORDER BY created_at ASC LIMIT 1
+    `).get(endpointId, bodyHash, `-${Math.floor(hours * 3600)} seconds`);
+    return this._mapEvent(row);
+  }
+
+  // Encrypt bodies stored before HOOKARMOR_ENCRYPT_BODIES was turned on, in batches
+  encryptExistingBodies(batchSize = 500) {
+    if (!this.encryptBodies) return 0;
+    const select = this.db.prepare('SELECT id, raw_body FROM events WHERE body_encrypted = 0 OR body_encrypted IS NULL LIMIT ?');
+    const update = this.db.prepare('UPDATE events SET raw_body = ?, body_encrypted = 1 WHERE id = ?');
+    let total = 0;
+    for (;;) {
+      const rows = select.all(batchSize);
+      if (rows.length === 0) break;
+      this.db.transaction(() => {
+        for (const r of rows) {
+          const buf = Buffer.isBuffer(r.raw_body) ? r.raw_body : Buffer.from(String(r.raw_body || ''), 'utf8');
+          update.run(encryptBody(buf, this.encryptionKey), r.id);
+        }
+      })();
+      total += rows.length;
+    }
+    return total;
+  }
+
   // Any stored copy counts: once HookArmor has custody, a provider re-send is redundant
   findEventByIdempotencyKey(endpointId, idempotencyKey) {
     if (!idempotencyKey) return null;
     const row = this.db.prepare('SELECT * FROM events WHERE endpoint_id = ? AND idempotency_key = ? ORDER BY created_at ASC LIMIT 1').get(endpointId, idempotencyKey);
-    if (!row) return null;
-    return { ...row, headers: this._readHeaders(row.headers) };
+    return this._mapEvent(row);
   }
 
-  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', claimedBy = null, verified = false }) {
+  saveEvent({ id, endpointId, idempotencyKey = null, provider, eventType, headers, rawBody, status = 'pending', claimedBy = null, verified = false, bodyHash = null }) {
     const rawBuffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+    const storedBody = this.encryptBodies ? encryptBody(rawBuffer, this.encryptionKey) : rawBuffer;
     const stmt = this.db.prepare(`
-      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, claimed_by, claimed_at, verified, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ${claimedBy ? "datetime('now')" : 'NULL'}, ?, datetime('now'), datetime('now'))
+      INSERT INTO events (id, endpoint_id, idempotency_key, provider, event_type, headers, raw_body, status, attempts, claimed_by, claimed_at, verified, body_encrypted, body_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ${claimedBy ? "datetime('now')" : 'NULL'}, ?, ?, ?, datetime('now'), datetime('now'))
     `);
     try {
       stmt.run(
@@ -376,10 +471,12 @@ class Storage {
         provider,
         eventType,
         this._writeHeaders(headers),
-        rawBuffer,
+        storedBody,
         status,
         claimedBy,
-        verified ? 1 : 0
+        verified ? 1 : 0,
+        this.encryptBodies ? 1 : 0,
+        bodyHash || this.hashBody(rawBuffer, provider, eventType)
       );
       return this.getEvent(id);
     } catch (err) {
@@ -473,10 +570,7 @@ class Storage {
   getEvent(id) {
     const row = this.db.prepare('SELECT * FROM events WHERE id = ?').get(id);
     if (!row) return null;
-    return {
-      ...row,
-      headers: this._readHeaders(row.headers)
-    };
+    return this._mapEvent(row);
   }
 
   getAttempts(eventId) {
@@ -509,10 +603,7 @@ class Storage {
     params.push(Math.min(Math.max(limit, 1), 5000), Math.max(offset, 0));
 
     const rows = this.db.prepare(sql).all(...params);
-    return rows.map(r => ({
-      ...r,
-      headers: this._readHeaders(r.headers)
-    }));
+    return rows.map((r) => this._mapEvent(r));
   }
 
   getStats() {
@@ -560,10 +651,7 @@ class Storage {
     }
     sql += ' ORDER BY created_at ASC LIMIT ?';
     params.push(limit);
-    return this.db.prepare(sql).all(...params).map(r => ({
-      ...r,
-      headers: this._readHeaders(r.headers)
-    }));
+    return this.db.prepare(sql).all(...params).map((r) => this._mapEvent(r));
   }
 
   countFailed(endpointId = null) {
@@ -580,25 +668,29 @@ class Storage {
     return this.db.prepare("SELECT count(*) AS n FROM events WHERE status IN ('pending', 'replaying')").get().n;
   }
 
-  getEventsDueForRetry(limit = 25) {
+  // Failed events whose backoff has elapsed, plus never-attempted 'pending' events (parked at ingress
+  // or released at shutdown). auto_retry only governs retries after a failure, so it does not gate
+  // pending events. excludeEndpointIds skips endpoints whose in-memory queue is full, so one
+  // backed-up endpoint cannot starve the others.
+  getEventsDueForRetry(limit = 25, excludeEndpointIds = []) {
+    const exclude = Array.isArray(excludeEndpointIds) ? excludeEndpointIds : [];
+    const excludeSql = exclude.length > 0 ? `AND e.endpoint_id NOT IN (${exclude.map(() => '?').join(',')})` : '';
     // datetime() normalises both legacy ISO-8601 values and SQLite-format values before comparing
     const sql = `
-      SELECT e.*, ep.max_retries, ep.target_url, ep.secret, ep.alert_webhook_url
+      SELECT e.*, ep.max_retries, ep.target_url, ep.alert_webhook_url
       FROM events e
       JOIN endpoints ep ON e.endpoint_id = ep.id
       WHERE (
         (e.status = 'failed' AND ep.auto_retry = 1 AND e.attempts < ep.max_retries AND e.next_retry_at IS NOT NULL AND datetime(e.next_retry_at) <= datetime('now'))
         OR
-        (e.status = 'pending' AND ep.auto_retry = 1 AND e.created_at <= datetime('now', '-20 seconds'))
+        (e.status = 'pending' AND e.created_at <= datetime('now', '-20 seconds'))
       )
+      ${excludeSql}
       ORDER BY e.created_at ASC
       LIMIT ?
     `;
-    const rows = this.db.prepare(sql).all(limit);
-    return rows.map(r => ({
-      ...r,
-      headers: this._readHeaders(r.headers)
-    }));
+    const rows = this.db.prepare(sql).all(...exclude, limit);
+    return rows.map((r) => this._mapEvent(r));
   }
 
   registerInstance({ id, hostname, pid }) {
@@ -646,6 +738,21 @@ class Storage {
       WHERE id = ? AND status IN ('failed', 'pending', 'delivered')
     `).run(instanceId, eventId);
     return info.changes > 0;
+  }
+
+  // Renew the lease on claims this instance still holds in memory (queued or in flight),
+  // so recoverInterruptedDeliveries only reclaims events whose owner lost track of them
+  renewClaims(eventIds, instanceId) {
+    if (!instanceId || !Array.isArray(eventIds) || eventIds.length === 0) return 0;
+    const stmt = this.db.prepare(`
+      UPDATE events SET claimed_at = datetime('now')
+      WHERE id = ? AND status = 'replaying' AND claimed_by = ?
+    `);
+    let renewed = 0;
+    this.db.transaction(() => {
+      for (const id of eventIds) renewed += stmt.run(id, instanceId).changes;
+    })();
+    return renewed;
   }
 
   // Release claim for a single event if dispatch or recording failed
@@ -702,9 +809,26 @@ class Storage {
         }
       }
     }
+    // Encrypted event bodies: a missing or wrong key would otherwise only show up at delivery time
+    // Every undelivered encrypted body is checked (those still have to be sent), plus the newest and
+    // oldest of the rest, so a key rotation that orphaned older rows is caught too
+    const samples = this.db.prepare(`
+      SELECT id, raw_body FROM events WHERE body_encrypted = 1 AND status != 'delivered'
+      UNION SELECT * FROM (SELECT id, raw_body FROM events WHERE body_encrypted = 1 ORDER BY created_at DESC LIMIT 1)
+      UNION SELECT * FROM (SELECT id, raw_body FROM events WHERE body_encrypted = 1 ORDER BY created_at ASC LIMIT 1)
+    `).all();
+    let badBodies = 0;
+    for (const row of samples) {
+      try {
+        decryptBody(Buffer.isBuffer(row.raw_body) ? row.raw_body : Buffer.from(String(row.raw_body)), this.encryptionKey);
+      } catch (_) {
+        badBodies++;
+      }
+    }
+    if (badBodies > 0) unreadable.push(`${badBodies} encrypted event bodies`);
     if (unreadable.length > 0 && !allowUnreadable) {
       throw new Error(
-        `Failed to decrypt signing secrets or custom headers for endpoint(s): ${unreadable.join(', ')}. ` +
+        `Failed to decrypt signing secrets, custom headers or event bodies for: ${unreadable.join(', ')}. ` +
         `HOOKARMOR_ENCRYPTION_KEY may be missing or invalid. ` +
         `Set HOOKARMOR_ALLOW_UNREADABLE_SECRETS=true to start anyway.`
       );
