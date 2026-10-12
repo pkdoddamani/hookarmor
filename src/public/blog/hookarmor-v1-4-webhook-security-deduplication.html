@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HookArmor 1.4: Webhook Replay Deduplication, AES-256 Body Encryption & Competitor Comparison</title>
+  <meta name="description" content="Discover HookArmor v1.4.0: cryptographic body-hash replay deduplication for Shopify/GitHub/Razorpay, AES-256-GCM at-rest body encryption, memory backpressure, and how it compares to Svix and Hookdeck.">
+  <link rel="canonical" href="https://hookarmour.dev/blog/hookarmor-v1-4-webhook-security-deduplication">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- OpenGraph / Twitter Cards for Social & Search Snippets -->
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://hookarmour.dev/blog/hookarmor-v1-4-webhook-security-deduplication">
+  <meta property="og:title" content="HookArmor 1.4: Webhook Replay Deduplication, AES-256 Body Encryption & Competitor Comparison">
+  <meta property="og:description" content="Deep dive into HookArmor v1.4.0: body-only signature replay protection, AES-256-GCM at-rest payload encryption, adaptive memory backpressure, and why self-hosted beats expensive hosted webhook SaaS.">
+  <meta property="og:site_name" content="HookArmor Engineering Blog">
+  <meta property="og:image" content="https://hookarmour.dev/og-preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="HookArmor 1.4: Webhook Replay Deduplication, AES-256 Body Encryption & Competitor Comparison">
+  <meta name="twitter:description" content="Cryptographic body-hash deduplication, AES-256-GCM at-rest body encryption, and an honest comparison against Svix and Hookdeck.">
+  <meta name="twitter:image" content="https://hookarmour.dev/og-preview.png">
+
+  <!-- Structured Data for Search Engines (TechArticle Schema) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "HookArmor 1.4: Webhook Replay Deduplication, AES-256 Body Encryption & Competitor Comparison",
+    "description": "A comprehensive technical breakdown of HookArmor v1.4.0 release: body-hash replay deduplication for body-only signature providers, AES-256-GCM payload encryption at rest, memory backpressure under high volume, and an architectural comparison with Svix, Hookdeck, and DIY SQS queues.",
+    "author": {
+      "@type": "Organization",
+      "name": "HookArmor Systems Team",
+      "url": "https://hookarmour.dev"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "HookArmor",
+      "url": "https://hookarmour.dev"
+    },
+    "datePublished": "2026-10-13",
+    "dateModified": "2026-10-13"
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #070a12;
+      --bg-card: #0d1322;
+      --border: #1e293b;
+      --accent: #3b82f6;
+      --accent-green: #10b981;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.75;
+      padding: 0 1.5rem;
+    }
+    nav {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: white;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-left: 1.5rem;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    article {
+      max-width: 860px;
+      margin: 3.5rem auto 6rem;
+    }
+    .meta {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin-bottom: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: 2.35rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.25;
+      margin-bottom: 1.5rem;
+    }
+    h2 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 2.75rem 0 1.2rem;
+      color: #f1f5f9;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+    h3 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin: 1.75rem 0 0.75rem;
+      color: #e2e8f0;
+    }
+    p {
+      margin-bottom: 1.35rem;
+      color: #cbd5e1;
+      font-size: 1.05rem;
+    }
+    strong { color: #f8fafc; }
+    ul, ol {
+      margin: 1.2rem 0 1.5rem 1.8rem;
+      color: #cbd5e1;
+    }
+    li { margin-bottom: 0.5rem; }
+    code {
+      font-family: var(--font-mono);
+      background: #0f172a;
+      color: #38bdf8;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.9em;
+      border: 1px solid #1e293b;
+    }
+    pre {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      margin: 1.5rem 0 2rem;
+    }
+    pre code {
+      background: transparent;
+      padding: 0;
+      border: none;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .callout {
+      background: rgba(59, 130, 246, 0.08);
+      border-left: 4px solid var(--accent);
+      padding: 1.25rem 1.5rem;
+      margin: 2rem 0;
+      border-radius: 0 8px 8px 0;
+    }
+    .callout-success {
+      background: rgba(16, 185, 129, 0.08);
+      border-left: 4px solid var(--accent-green);
+    }
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 2rem 0;
+      font-size: 0.95rem;
+    }
+    .comparison-table th, .comparison-table td {
+      border: 1px solid var(--border);
+      padding: 0.85rem 1rem;
+      text-align: left;
+    }
+    .comparison-table th {
+      background: var(--bg-card);
+      color: #f1f5f9;
+      font-weight: 700;
+    }
+    .comparison-table tr:nth-child(even) {
+      background: rgba(15, 23, 42, 0.4);
+    }
+    .check { color: var(--accent-green); font-weight: bold; }
+    .cross { color: #ef4444; font-weight: bold; }
+    .footer-cta {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2.5rem;
+      margin-top: 4rem;
+      text-align: center;
+    }
+    .btn {
+      display: inline-block;
+      background: var(--accent);
+      color: white;
+      padding: 0.75rem 1.75rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      margin-top: 1rem;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #2563eb; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">🛡️ HookArmor</a>
+    <div class="nav-links">
+      <a href="/">Product</a>
+      <a href="/blog">Blog</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <article>
+    <div class="meta">Engineering Release • v1.4.0 Architecture • Oct 13, 2026</div>
+    <h1>HookArmor 1.4: Webhook Replay Deduplication, AES-256 Body Encryption & The State of Webhook Infrastructure</h1>
+
+    <p>
+      In distributed SaaS architectures, webhooks are the single most vulnerable link in the payment and fulfilment chain. When a customer upgrades on Stripe, a merchant places an order on Shopify, or a payout triggers on Razorpay, your backend must guarantee two competing properties: <strong>never drop an event</strong>, and <strong>never execute duplicate side effects</strong>.
+    </p>
+
+    <p>
+      Today, we are announcing <strong>HookArmor v1.4.0</strong>, a major security and reliability upgrade. This release introduces cryptographic body-hash replay deduplication, opt-in AES-256-GCM payload encryption at rest, adaptive in-memory backpressure, and hard per-delivery deadlines.
+    </p>
+
+    <p>
+      In this deep dive, we break down why body-only signature schemes cause silent double-billing, how HookArmor v1.4.0 neutralizes these edge cases, and how HookArmor compares to commercial webhook platforms like Svix and Hookdeck.
+    </p>
+
+    <h2>The Vulnerability: The "Body-Only" Webhook Signature Trap</h2>
+    <p>
+      Every developer understands that webhooks must be verified against forgery using HMAC signatures. However, major payment and e-commerce gateways implement webhook signatures in fundamentally different ways:
+    </p>
+
+    <ul>
+      <li><strong>Header-Bound Signatures (Stripe, Svix/Clerk):</strong> Stripe signs both the raw payload body <em>and</em> a UNIX timestamp in the header (<code>t=1697150000,v1=...</code>). Because the timestamp is signed, an attacker cannot forge a new delivery time without invalidating the cryptographic signature.</li>
+      <li><strong>Body-Only Signatures (Shopify, GitHub, Razorpay):</strong> Shopify (<code>X-Shopify-Hmac-Sha256</code>) and Razorpay (<code>X-Razorpay-Signature</code>) compute the HMAC strictly over the raw request body. The delivery ID headers (such as <code>X-Shopify-Webhook-Id</code> or <code>X-Razorpay-Event-Id</code>) and HTTP timestamp headers are <strong>unsigned metadata</strong>.</li>
+    </ul>
+
+    <div class="callout">
+      <strong>The Danger:</strong> If a proxy or backend relies solely on <code>idempotency_key = headers['x-shopify-webhook-id']</code> for deduplication, an upstream network re-transmission or gateway retry with a freshly minted delivery ID header will completely bypass traditional idempotency checks. Your application will process the identical order or charge twice!
+    </div>
+
+    <h3>How HookArmor 1.4 Solves It: Keyed Body-Hash Sliding Window</h3>
+    <p>
+      HookArmor v1.4.0 introduces an automated body-hash deduplication engine (<code>HOOKARMOR_BODY_DEDUPE_HOURS</code>, default 24h). When a cryptographically verified webhook arrives from a body-only provider (Shopify, GitHub, Razorpay):
+    </p>
+    <ol>
+      <li>HookArmor computes a canonical HMAC-SHA256 fingerprint over <code>(provider, eventType, rawBodyBuffer)</code>.</li>
+      <li>Crucially, the <code>eventType</code> (e.g. Shopify topic <code>orders/create</code> vs <code>orders/updated</code>) is bound into the hash. This prevents false deduplication, as Shopify frequently sends byte-identical payloads across distinct lifecycle events.</li>
+      <li>If an identical verified payload has been received within the configured sliding window, HookArmor immediately returns <code>HTTP 200 OK</code> with <code>status: "deduplicated"</code> and the original <code>hookarmor_id</code>, suppressing the duplicate dispatch to your downstream backend.</li>
+      <li>Crucially, <strong>unverified webhooks cannot poison the deduplication cache</strong>. Even if an attacker spams arbitrary payloads, genuine verified events are never suppressed.</li>
+    </ol>
+
+    <h2>At-Rest Protection: AES-256-GCM Webhook Body Encryption</h2>
+    <p>
+      Webhook bodies contain your customers' most sensitive data: billing emails, credit card last4, shipping addresses, phone numbers, and invoice totals. While databases are often encrypted at the disk level, local SQLite WAL files, EBS volume snapshots, and container backups are frequently exported or shared across environments.
+    </p>
+
+    <p>
+      In HookArmor v1.4.0, setting <code>HOOKARMOR_ENCRYPT_BODIES=true</code> alongside your <code>HOOKARMOR_ENCRYPTION_KEY</code> activates binary AES-256-GCM envelope encryption at rest:
+    </p>
+
+    <pre><code># Enable at-rest encryption in docker-compose.yml or .env
+HOOKARMOR_ENCRYPTION_KEY=your-32-plus-character-secret-key-here
+HOOKARMOR_ENCRYPT_BODIES=true</code></pre>
+
+    <p>
+      Every webhook body is sealed with a fresh 12-byte cryptographically secure random IV and authenticated with a 16-byte GCM authentication tag:
+    </p>
+    <pre><code>[ 12-byte IV ] [ 16-byte Auth Tag ] [ Ciphertext ]</code></pre>
+
+    <div class="callout callout-success">
+      <strong>Zero-Downtime Migration:</strong> Upgrading an existing instance to <code>v1.4.0</code> with body encryption automatically migrates and encrypts pre-existing plaintext rows in SQLite in batched transactions on boot, without blocking traffic or corrupting existing records.
+    </div>
+
+    <h2>Adaptive Memory Backpressure & Safe Event Parking</h2>
+    <p>
+      What happens when your production API goes down for 45 minutes during a flash sale? Under normal circumstances, webhook proxies keep piling up in-flight requests in memory. Once the Node.js event loop exceeds available RAM, the process crashes with an <code>Out of Memory (OOM)</code> error, incinerating every queued webhook in memory.
+    </p>
+    <p>
+      HookArmor v1.4.0 introduces <strong>Safe Event Parking</strong> (<code>HOOKARMOR_MAX_QUEUED_IN_MEMORY=1000</code>):
+    </p>
+    <ul>
+      <li>When an endpoint reaches 1,000 queued deliveries in memory, HookArmor immediately parks subsequent events directly in SQLite with <code>status = 'pending'</code>.</li>
+      <li>It answers the upstream gateway (Stripe/Shopify) with an immediate <code>200 OK</code> so upstream providers never enter aggressive exponential backoff or disable your webhooks.</li>
+      <li>The background retry worker sweeps parked events in batches (up to 1,000 events per 5s tick) and drains them asynchronously once your application stabilizes.</li>
+      <li><strong>Anti-Starvation:</strong> If one destination endpoint is down and backed up, HookArmor excludes it from the retry query, ensuring healthy endpoints are dispatched at full throughput without head-of-line blocking.</li>
+    </ul>
+
+    <h2>HookArmor vs. Svix vs. Hookdeck vs. DIY Queues</h2>
+    <p>
+      Engineering teams facing webhook reliability challenges typically evaluate four paths: commercial hosted SaaS (Svix, Hookdeck), rolling custom AWS SQS/Lambda infrastructure, or deploying HookArmor. Here is an honest, architectural comparison:
+    </p>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Feature / Capability</th>
+          <th>HookArmor (v1.4.0)</th>
+          <th>Svix</th>
+          <th>Hookdeck</th>
+          <th>DIY (SQS + Lambda)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Cost & Licensing</strong></td>
+          <td><span class="check">100% Free (MIT Open Source)</span></td>
+          <td>Paid ($120 - $500+/mo)</td>
+          <td>Paid ($49 - $349+/mo)</td>
+          <td>AWS bill + dev maintenance</td>
+        </tr>
+        <tr>
+          <td><strong>Data Residency & Privacy</strong></td>
+          <td><span class="check">Self-Hosted (Your VPC / Docker)</span></td>
+          <td>Third-party cloud</td>
+          <td>Third-party cloud</td>
+          <td>Your AWS Account</td>
+        </tr>
+        <tr>
+          <td><strong>At-Rest Body Encryption</strong></td>
+          <td><span class="check">Built-in AES-256-GCM</span></td>
+          <td>Vendor managed</td>
+          <td>Vendor managed</td>
+          <td>Manual KMS implementation</td>
+        </tr>
+        <tr>
+          <td><strong>Stripe Replay Signature Re-Signing</strong></td>
+          <td><span class="check">Automatic on Dispatched Replay</span></td>
+          <td><span class="cross">No (Requires app SDK rewrite)</span></td>
+          <td>Manual configuration</td>
+          <td><span class="cross">Fails 300s timestamp tolerance</span></td>
+        </tr>
+        <tr>
+          <td><strong>Body-Hash Deduplication</strong></td>
+          <td><span class="check">Built-in for Shopify/Razorpay</span></td>
+          <td>Idempotency header only</td>
+          <td>Custom rules required</td>
+          <td>Requires custom Redis logic</td>
+        </tr>
+        <tr>
+          <td><strong>Webhook Disablement Sentinel</strong></td>
+          <td><span class="check">Shopify 19-failure & Razorpay 24h</span></td>
+          <td><span class="cross">No</span></td>
+          <td><span class="cross">No</span></td>
+          <td><span class="cross">No</span></td>
+        </tr>
+        <tr>
+          <td><strong>Local Dev CLI & Dashboard</strong></td>
+          <td><span class="check">Instant (<code>npx hookarmor</code>)</span></td>
+          <td>Web dashboard only</td>
+          <td>Hookdeck CLI</td>
+          <td>LocalStack / custom tooling</td>
+        </tr>
+        <tr>
+          <td><strong>External Dependencies</strong></td>
+          <td><span class="check">Zero (Embedded SQLite WAL)</span></td>
+          <td>Postgres / Redis (Self-hosted tier)</td>
+          <td>Proprietary</td>
+          <td>SQS, DynamoDB, Lambda, API GW</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Why HookArmor's Architecture Wins for Modern SaaS</h3>
+    <ol>
+      <li><strong>Zero Code Changes (Transparent Reverse Proxy):</strong> Hosted vendors like Svix require you to modify your application code, import proprietary SDKs, and redirect your entire webhook architecture to their APIs. HookArmor acts as a drop-in transparent proxy: your app still receives standard Stripe, Shopify, or Razorpay headers and authenticates them with standard HMAC verification libraries.</li>
+      <li><strong>Zero-Dependency Lightweight Footprint:</strong> Unlike DIY distributed systems that require provisioning AWS SQS, DynamoDB, and Lambda concurrency limits, HookArmor is a single, statically deployable Node.js container with embedded SQLite WAL storage. It uses less than 80 MB of RAM, handles thousands of webhooks per second, and persists across reboots with a single Docker volume mount.</li>
+      <li><strong>No Subscription SaaS Paywalls:</strong> Traditional webhook debuggers (Webhook.site, ngrok, Hookdeck) gate event replay history, custom headers, and multi-endpoint routing behind recurring monthly credit-card plans. HookArmor is 100% free and open-source under the MIT license.</li>
+    </ol>
+
+    <h2>Getting Started with HookArmor 1.4</h2>
+    <p>
+      You can run HookArmor in 10 seconds locally or deploy it to production on Railway, Render, or Docker:
+    </p>
+
+    <pre><code># Run locally with zero install
+npx hookarmor start
+
+# Or deploy via Docker with persistent volume and body encryption
+docker run -d \
+  -p 4000:4000 \
+  -v hookarmor_data:/app/data \
+  -e HOOKARMOR_API_KEY=your-secret-api-key \
+  -e HOOKARMOR_ENCRYPTION_KEY=your-32-char-encryption-key \
+  -e HOOKARMOR_ENCRYPT_BODIES=true \
+  --name hookarmor \
+  ghcr.io/pkdoddamani/hookarmor:1.4.0</code></pre>
+
+    <div class="footer-cta">
+      <h3>Ready for Zero-Loss Webhook Reliability?</h3>
+      <p>Stop losing payment conversions to transient cold starts, deploy restarts, and duplicate replays.</p>
+      <a href="https://github.com/pkdoddamani/hookarmor" class="btn" target="_blank">Star HookArmor on GitHub ⭐️</a>
+    </div>
+  </article>
+</body>
+</html>
