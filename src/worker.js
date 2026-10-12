@@ -13,6 +13,9 @@ class RetryWorker extends EventEmitter {
     this.leaseTimeoutSeconds = options.leaseTimeoutSeconds || 60;
     // Endpoints whose in-memory queue is at least this long are left for later ticks
     this.maxQueuedPerEndpoint = options.maxQueuedPerEndpoint || 1000;
+    // Up to batchSize * maxBatchesPerTick events are claimed per tick (default 1000 per 5s)
+    this.batchSize = options.batchSize || 200;
+    this.maxBatchesPerTick = options.maxBatchesPerTick || 5;
     this.timer = null;
     this.isProcessing = false;
   }
@@ -54,23 +57,37 @@ class RetryWorker extends EventEmitter {
 
       this.prune();
 
-      const eventsDue = this.storage.getEventsDueForRetry(25);
-      if (!eventsDue || eventsDue.length === 0) return;
+      // Pull batches until nothing is due, every due endpoint's queue is full, or the per-tick cap is hit
+      const saturated = new Set();
+      for (let batch = 0; batch < this.maxBatchesPerTick; batch++) {
+        const eventsDue = this.storage.getEventsDueForRetry(this.batchSize, [...saturated]);
+        if (!eventsDue || eventsDue.length === 0) break;
 
-      for (const event of eventsDue) {
-        if (this.dispatcher.queuedFor(event.endpoint_id) >= this.maxQueuedPerEndpoint) continue;
-        const claimed = this.storage.claimEventForRetry(event.id, this.instanceId);
-        if (!claimed) continue; // Another process or manual replay already claimed it
+        const endpoints = new Map();
+        for (const event of eventsDue) {
+          if (saturated.has(event.endpoint_id)) continue;
+          if (this.dispatcher.queuedFor(event.endpoint_id) >= this.maxQueuedPerEndpoint) {
+            saturated.add(event.endpoint_id);
+            continue;
+          }
+          const claimed = this.storage.claimEventForRetry(event.id, this.instanceId);
+          if (!claimed) continue; // Another process or manual replay already claimed it
 
-        const endpoint = this.storage.getEndpoint(event.endpoint_id);
-        if (!endpoint) continue;
+          if (!endpoints.has(event.endpoint_id)) endpoints.set(event.endpoint_id, this.storage.getEndpoint(event.endpoint_id));
+          const endpoint = endpoints.get(event.endpoint_id);
+          if (!endpoint) {
+            this.storage.releaseClaim(event.id);
+            continue;
+          }
 
-        this.emit('retry:claimed', { eventId: event.id, endpointId: endpoint.id });
+          this.emit('retry:claimed', { eventId: event.id, endpointId: endpoint.id });
 
-        // Dispatch asynchronously without blocking next iterations
-        this.dispatcher.dispatch(event, endpoint, { replay: true }).catch((err) => {
-          this.emit('retry:error', { eventId: event.id, error: err.message });
-        });
+          // Dispatch asynchronously without blocking next iterations
+          this.dispatcher.dispatch(event, endpoint, { replay: true }).catch((err) => {
+            this.emit('retry:error', { eventId: event.id, error: err.message });
+          });
+        }
+        if (eventsDue.length < this.batchSize) break;
       }
     } catch (err) {
       if (this.listenerCount('error') > 0) this.emit('error', err);

@@ -3,8 +3,8 @@
 > **Durable at-least-once Webhook Dead-Letter Queue (DLQ), Reliability Proxy, and Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/Tests-83%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
-[![Release: v1.3.2](https://img.shields.io/badge/Release-v1.3.2-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.3.2)
+[![Tests: Passing](https://img.shields.io/badge/Tests-97%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
+[![Release: v1.4.0](https://img.shields.io/badge/Release-v1.4.0-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.4.0)
 [![npm version](https://img.shields.io/npm/v/hookarmor.svg?color=cb3837)](https://www.npmjs.com/package/hookarmor)
 
 ---
@@ -119,7 +119,7 @@ npx hookarmor replay evt_1758513516086_m8r0e7 -y
 
 ## 📊 Verification Test Suite
 
-HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 67-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**75 tests total**):
+HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus an 89-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**97 tests total**):
 ```bash
 npm test
 ```
@@ -324,6 +324,23 @@ When `HOOKARMOR_API_KEY` is present:
 | `HOOKARMOR_TRUST_PROXY` | `1` on Railway/Render | Express `trust proxy` setting, used for per-client rate limits |
 | `HOOKARMOR_DEMO_MODE` | `false` | Read-only public demo |
 | `HOOKARMOR_ALLOW_NO_AUTH` | `false` | Allow production start without an API key (trusted networks only) |
+| `HOOKARMOR_ENCRYPT_BODIES` | `false` | Also encrypt webhook bodies at rest (AES-256-GCM, requires `HOOKARMOR_ENCRYPTION_KEY`). Bodies are decrypted transparently for delivery, the dashboard and the CLI. Bodies stored before it was turned on are encrypted at startup |
+| `HOOKARMOR_BODY_DEDUPE_HOURS` | `24` | Shopify, GitHub and Razorpay sign only the body, not the delivery id, so a captured webhook can be re-sent under a new id. A verified event whose provider, event type (e.g. Shopify topic) and body are identical to a verified event received within this window is acknowledged as a duplicate and not delivered again. `0` disables |
+| `HOOKARMOR_RETRY_BATCH_SIZE` | `200` | Events the retry worker claims per batch (up to 5 batches every 5 seconds) |
+| `HOOKARMOR_ENABLE_WAITLIST` | on only where the landing page is served | Public `POST /api/waitlist` signup used by the marketing landing page |
+
+## 📦 Upgrade Notes (v1.4.0)
+
+1. **Node.js 20 or newer is required** (Node 18 reached end of life in April 2025). The Docker image now uses `node:22-slim` and has a `HEALTHCHECK`.
+2. **Provider names are normalised.** `generic` (the dashboard default) now means "not pinned": the first verified webhook pins the endpoint. `svix` and `clerk` are accepted for `clerk/svix`. Endpoints saved by older versions as `generic` or `svix`, which rejected signed webhooks, start working without changes. Unknown provider names are rejected when saving.
+3. **Endpoint updates keep omitted fields.** Re-saving an endpoint through the API or `hookarmor endpoints add` no longer wipes custom headers or resets the name, retries and concurrency.
+4. **Custom headers are validated on save.** Values with control characters and headers HookArmor sets itself (`Host`, `Content-Length`, signature headers, `X-HookArmor-*`) are rejected with HTTP 400.
+5. **Backpressure.** When an endpoint has `HOOKARMOR_MAX_QUEUED_IN_MEMORY` deliveries waiting, new events are parked in SQLite and delivered by the retry worker, instead of piling up in memory. Each delivery also has a hard deadline (twice the idle timeout).
+6. **Stalled deliveries are reclaimed.** The 60-second delivery lease now actually runs, and leases on events still queued in memory are renewed so they are not delivered twice.
+7. **Public waitlist** (`POST /api/waitlist`) is only enabled where the marketing landing page is served. Set `HOOKARMOR_ENABLE_WAITLIST=true` to keep it elsewhere.
+8. **Alerts** mask credentials and query-string values in target URLs before posting to Slack or Discord.
+9. **CLI**: `hookarmor endpoints rm --force` deletes an endpoint that still has pending or failed events.
+10. The built-in `demo-stripe` endpoint is no longer pinned to Stripe on new installs. On existing installs, re-save it as generic if the simulator's Shopify or GitHub templates are rejected.
 
 ## 📦 Upgrade Notes (v1.1.0)
 

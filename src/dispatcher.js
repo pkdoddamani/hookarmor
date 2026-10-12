@@ -522,6 +522,10 @@ class Dispatcher extends EventEmitter {
       };
 
       try {
+        if (event.body_unreadable) {
+          finish({ errorMessage: 'Event body cannot be decrypted with the configured HOOKARMOR_ENCRYPTION_KEY; not delivered' });
+          return;
+        }
         const check = checkUrl(targetUrl, this.strictSSRF);
         if (!check.ok) {
           finish({ errorMessage: `Delivery blocked: ${check.reason}` });

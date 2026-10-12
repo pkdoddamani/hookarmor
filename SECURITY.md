@@ -6,8 +6,8 @@ Only the latest release branch of HookArmor receives active security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.3.x   | :white_check_mark: |
-| < 1.3.0 | :x:                |
+| 1.4.x   | :white_check_mark: |
+| < 1.4.0 | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -30,6 +30,7 @@ If you believe you have discovered a security vulnerability in HookArmor:
 ## Security Architecture & Best Practices
 
 - **Ingress Signature Verification**: Always configure endpoint signing secrets (`whsec_...`) so incoming webhooks are cryptographically authenticated against spoofing before entry into the queue.
-- **Secrets at Rest**: Set `HOOKARMOR_ENCRYPTION_KEY` (32+ random characters) to encrypt all endpoint signing secrets with AES-256-GCM at rest.
+- **Secrets at Rest**: Set `HOOKARMOR_ENCRYPTION_KEY` (32+ random characters) to encrypt endpoint signing secrets, custom destination headers and inbound auth headers with AES-256-GCM at rest. Webhook bodies are stored in plaintext unless you also set `HOOKARMOR_ENCRYPT_BODIES=true`.
+- **Demo Mode**: Never enable `HOOKARMOR_DEMO_MODE` on an instance holding real events. It serves event bodies and headers, including provider signatures, to anyone.
 - **Outbound SSRF Protection**: In production environments, HookArmor enforces strict SSRF protections by default, validating both destination URLs and resolved IP addresses against private and loopback subnets.
 - **API Key Protection**: Never run a public instance without `HOOKARMOR_API_KEY`. Without an API key, management endpoints are restricted strictly to loopback interfaces.

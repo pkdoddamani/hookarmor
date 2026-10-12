@@ -15,6 +15,11 @@ const { assessDisablementRisk } = require('./sentinel');
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const ENDPOINT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+// These providers sign the body only: the delivery id header (X-Shopify-Webhook-Id,
+// X-GitHub-Delivery, X-Razorpay-Event-Id) and the time are unsigned, so a captured request
+// can be re-sent under a fresh id. For them, a verified body seen recently is treated as a duplicate.
+const BODY_ONLY_SIGNATURE_PROVIDERS = new Set(['shopify', 'github', 'razorpay']);
+
 const SENSITIVE_INBOUND_HEADERS = new Set([
   'authorization',
   'proxy-authorization',
@@ -158,6 +163,15 @@ function createServer(options = {}) {
     ? options.maxQueuedPerEndpoint
     : clampInt(process.env.HOOKARMOR_MAX_QUEUED_IN_MEMORY, 1000, 10, 100000);
 
+  // Marketing landing page at '/' (hosted Railway/Render deployments or HOOKARMOR_SERVE_LANDING=true)
+  const serveLanding = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.HOOKARMOR_SERVE_LANDING === 'true') &&
+    process.env.HOOKARMOR_SERVE_LANDING !== 'false';
+  // The public waitlist signup only exists where the landing page is served, so self-hosted
+  // instances do not accept anonymous database writes
+  const waitlistEnabled = options.enableWaitlist !== undefined
+    ? options.enableWaitlist
+    : (envFlag('HOOKARMOR_ENABLE_WAITLIST') !== undefined ? envFlag('HOOKARMOR_ENABLE_WAITLIST') : serveLanding);
+
   if (isProduction && !apiKey && !allowNoAuth) {
     throw new Error(
       'HOOKARMOR_API_KEY is required in production: without it the management API (events, endpoints, replays) is open to anyone. ' +
@@ -190,8 +204,13 @@ function createServer(options = {}) {
   if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10) : trustProxy);
 
   const storage = new Storage(options.dbPath, {
-    encryptionKey: options.encryptionKey || process.env.HOOKARMOR_ENCRYPTION_KEY
+    encryptionKey: options.encryptionKey || process.env.HOOKARMOR_ENCRYPTION_KEY,
+    encryptBodies: options.encryptBodies
   });
+  // Replay window for body-only-signature providers (0 disables)
+  const bodyDedupeHours = options.bodyDedupeHours !== undefined
+    ? options.bodyDedupeHours
+    : clampInt(process.env.HOOKARMOR_BODY_DEDUPE_HOURS, 24, 0, 24 * 30);
 
   const instanceId = options.instanceId || `inst_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   storage.registerInstance({
@@ -205,8 +224,19 @@ function createServer(options = {}) {
     console.warn(`[HookArmor] Re-queued ${recovered} event(s) that were mid-delivery when the process last stopped.`);
   }
 
+  // (2) Turning on HOOKARMOR_ENCRYPT_BODIES also encrypts bodies stored before it was enabled
+  const encryptedExisting = storage.encryptExistingBodies();
+  if (encryptedExisting > 0) {
+    console.warn(`[HookArmor] Encrypted ${encryptedExisting} previously stored event bod${encryptedExisting === 1 ? 'y' : 'ies'} at rest.`);
+  }
+
   // Fail-fast verification: ensure all endpoint secrets can be read with the active encryption key
-  storage.assertSecretsReadable(Boolean(process.env.HOOKARMOR_ALLOW_UNREADABLE_SECRETS === 'true'));
+  try {
+    storage.assertSecretsReadable(Boolean(process.env.HOOKARMOR_ALLOW_UNREADABLE_SECRETS === 'true'));
+  } catch (err) {
+    storage.close();
+    throw err;
+  }
 
   // Security audit check: warn about endpoints without secrets on startup
   try {
@@ -231,7 +261,8 @@ function createServer(options = {}) {
     intervalMs: options.retryIntervalMs || 5000,
     retentionDays,
     instanceId,
-    maxQueuedPerEndpoint: maxQueuedPerEndpoint
+    maxQueuedPerEndpoint: maxQueuedPerEndpoint,
+    batchSize: options.retryBatchSize || clampInt(process.env.HOOKARMOR_RETRY_BATCH_SIZE, 200, 1, 5000)
   });
   if (options.autoStartWorker !== false) {
     worker.start();
@@ -491,6 +522,19 @@ function createServer(options = {}) {
         }
       }
 
+      const bodyHash = storage.hashBody(rawBodyBuffer, provider, eventType);
+      if (verified && bodyDedupeHours > 0 && BODY_ONLY_SIGNATURE_PROVIDERS.has(provider)) {
+        const sameBody = storage.findRecentEventByBodyHash(endpoint.id, bodyHash, bodyDedupeHours);
+        if (sameBody) {
+          return res.status(200).json({
+            received: true,
+            hookarmor_id: sameBody.id,
+            status: 'deduplicated',
+            message: `Identical signed payload already received within ${bodyDedupeHours}h (current status: ${sameBody.status}). Suppressed duplicate delivery.`
+          });
+        }
+      }
+
       const eventId = `evt_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
       newEventId = eventId;
 
@@ -510,7 +554,8 @@ function createServer(options = {}) {
         rawBody: rawBodyBuffer,
         status: parked ? 'pending' : 'replaying',
         claimedBy: parked ? null : instanceId,
-        verified
+        verified,
+        bodyHash
       });
     } catch (err) {
       // Not persisted: return an error so the provider keeps its own retry schedule
@@ -550,6 +595,7 @@ function createServer(options = {}) {
   app.use('/api', (req, res, next) => {
     // Public waitlist signup for the landing page (rate limited)
     if (req.path === '/waitlist' && req.method === 'POST') {
+      if (!waitlistEnabled) return res.status(404).json({ error: 'Not found' });
       if (!waitlistLimiter(req.ip)) return res.status(429).json({ error: 'Too many signups from this address; try again later' });
       return next();
     }
@@ -908,8 +954,7 @@ function createServer(options = {}) {
   // Root Route: Marketing landing page on cloud production (Railway/Render) or when explicitly configured;
   // Dashboard on /dashboard and /app, or on / for local self-hosted instances.
   app.get('/', (req, res) => {
-    const isCloud = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.HOOKARMOR_SERVE_LANDING === 'true');
-    if (isCloud && process.env.HOOKARMOR_SERVE_LANDING !== 'false') {
+    if (serveLanding) {
       return res.sendFile('landing.html', { root: path.join(__dirname, 'public') });
     }
     res.sendFile('index.html', { root: path.join(__dirname, 'public') });

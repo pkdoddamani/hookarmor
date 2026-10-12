@@ -381,7 +381,7 @@ test('mock receiver routes are not mounted in production', async () => {
 });
 
 test('waitlist signups are rate limited per client', async () => {
-  const ha = await startHA({ waitlistRateLimit: 3 });
+  const ha = await startHA({ waitlistRateLimit: 3, enableWaitlist: true });
   try {
     const codes = [];
     for (let i = 0; i < 5; i++) {
@@ -2106,6 +2106,144 @@ test('R8: CLI "endpoints rm" explains the DLQ guard and deletes with --force', a
     assert.strictEqual(ha.storage.getEndpoint('ep_r8'), null);
   } finally {
     await ha.close();
+  }
+});
+
+const backdate = (ha, seconds) => ha.storage.db.prepare(`UPDATE events SET created_at = datetime('now', '-${seconds} seconds')`).run();
+
+test('R9: worker delivers pending events even with auto-retry off, and a saturated endpoint does not starve others', async () => {
+  const target = await startTarget();
+  const ha = await startHA({ maxQueuedPerEndpoint: 10, retryBatchSize: 5 });
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r9_busy', name: 'busy', targetUrl: target.url });
+    ha.storage.createEndpoint({ id: 'ep_r9_ok', name: 'ok', targetUrl: target.url, autoRetry: 0 });
+    // Oldest events belong to the saturated endpoint
+    for (let i = 0; i < 20; i++) ha.storage.saveEvent({ id: `evt_r9_busy_${i}`, endpointId: 'ep_r9_busy', headers: {}, rawBody: '{}', status: 'pending' });
+    backdate(ha, 120);
+    ha.storage.saveEvent({ id: 'evt_r9_ok', endpointId: 'ep_r9_ok', headers: {}, rawBody: '{"ok":1}', status: 'pending' });
+    ha.storage.db.prepare("UPDATE events SET created_at = datetime('now', '-60 seconds') WHERE id = 'evt_r9_ok'").run();
+    ha.dispatcher.waitQueues.set('ep_r9_busy', Array(10).fill(() => {}));
+    await ha.worker.tick();
+    ha.dispatcher.waitQueues.delete('ep_r9_busy');
+    const ok = await waitFor(() => ha.storage.getEvent('evt_r9_ok').status === 'delivered');
+    assert.ok(ok, `pending event on auto_retry=0 endpoint must be delivered, status ${ha.storage.getEvent('evt_r9_ok').status}`);
+    assert.strictEqual(ha.storage.getEvent('evt_r9_busy_0').status, 'pending', 'saturated endpoint must be skipped');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('R10: alert payloads mask credentials and query values in the target URL', async () => {
+  const Alerter = require('../src/alerter');
+  const masked = Alerter.safeUrl('https://user:pw@api.example.com/hook?token=sk_live_123&x=1#frag');
+  assert.ok(!masked.includes('sk_live_123') && !masked.includes('pw@'), masked);
+  assert.strictEqual(masked, 'https://api.example.com/…');
+  assert.strictEqual(Alerter.safeUrl('https://hooks.example.com/services/T000/B000/XXXXSECRET'), 'https://hooks.example.com/…');
+  assert.strictEqual(Alerter.safeUrl('http://app:3000'), 'http://app:3000');
+});
+
+test('R11: public waitlist signup is off on self-hosted instances unless enabled', async () => {
+  const ha = await startHA();
+  try {
+    const res = await fetch(`${ha.base}/api/waitlist`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ email: 'a@example.com' }) });
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(ha.storage.listWaitlist().length, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R12: HOOKARMOR_ENCRYPT_BODIES stores bodies encrypted, delivers and shows plaintext, and fails fast without the key', async () => {
+  const target = await startTarget();
+  const dbPath = path.join(os.tmpdir(), `ha_r12_${Date.now()}.db`);
+  const ha = await startHA({ dbPath, encryptionKey: 'k'.repeat(32), encryptBodies: true });
+  let closed = false;
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r12', name: 'r12', targetUrl: target.url });
+    const body = JSON.stringify({ id: 'r12', email: 'customer@example.com' });
+    await fetch(`${ha.base}/in/ep_r12`, { method: 'POST', headers: JSON_HEADERS, body });
+    const delivered = await waitFor(() => target.requests[0]);
+    assert.strictEqual(delivered.body, body);
+    const row = ha.storage.db.prepare("SELECT raw_body, body_encrypted FROM events WHERE endpoint_id = 'ep_r12'").get();
+    assert.strictEqual(row.body_encrypted, 1);
+    assert.ok(!Buffer.from(row.raw_body).toString('latin1').includes('customer@example.com'), 'body must not be stored in plaintext');
+    const listed = await (await fetch(`${ha.base}/api/events?endpointId=ep_r12`)).json();
+    assert.strictEqual(listed[0].raw_body, body);
+    await ha.close();
+    ha.storage.close();
+    closed = true;
+
+    assert.throws(() => createServer({ dbPath, autoStartWorker: false, encryptionKey: null, production: false }), /event bodies/);
+    const Storage = require('../src/storage');
+    const keyless = new Storage(dbPath, { encryptionKey: null });
+    const ev = keyless.listEvents({ endpointId: 'ep_r12' })[0];
+    assert.strictEqual(ev.body_unreadable, true, 'undecryptable body must be flagged, never returned as garbage');
+    keyless.close();
+  } finally {
+    if (!closed) await ha.close();
+    target.close();
+    // Best effort: on Windows a handle from the failed startup above can keep the file locked
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.rmSync(dbPath + suffix, { force: true }); } catch (_) {}
+    }
+  }
+});
+
+test('R13: a captured Shopify webhook re-sent under a new webhook id is deduplicated by its signed body', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r13', name: 'r13', targetUrl: target.url, provider: 'shopify', secret: 'shpss_r13' });
+    const body = JSON.stringify({ id: 42, total_price: '100.00' });
+    const hmac = crypto.createHmac('sha256', 'shpss_r13').update(body).digest('base64');
+    const send = (id, b = body, h = hmac, topic = 'orders/paid') => fetch(`${ha.base}/in/ep_r13`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'X-Shopify-Hmac-Sha256': h, 'X-Shopify-Topic': topic, 'X-Shopify-Webhook-Id': id },
+      body: b
+    });
+    assert.strictEqual((await (await send('wh-1')).json()).status, 'buffered');
+    assert.strictEqual((await (await send('wh-replayed')).json()).status, 'deduplicated');
+    // Shopify sends byte-identical bodies for different topics: those are distinct events
+    assert.strictEqual((await (await send('wh-3', body, hmac, 'orders/updated')).json()).status, 'buffered');
+    // A genuinely different order is still accepted
+    const body2 = JSON.stringify({ id: 43, total_price: '5.00' });
+    const hmac2 = crypto.createHmac('sha256', 'shpss_r13').update(body2).digest('base64');
+    assert.strictEqual((await (await send('wh-2', body2, hmac2)).json()).status, 'buffered');
+    await waitFor(() => target.requests.length >= 3);
+    await sleep(200);
+    assert.strictEqual(target.requests.length, 3);
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('R14: turning on body encryption also encrypts bodies stored before it, and body dedupe ignores unverified rows', async () => {
+  const dbPath = path.join(os.tmpdir(), `ha_r14_${Date.now()}.db`);
+  const Storage = require('../src/storage');
+  try {
+    const plain = new Storage(dbPath, { encryptionKey: 'k'.repeat(32) });
+    plain.createEndpoint({ id: 'ep_r14', name: 'r14', targetUrl: 'https://example.com/h' });
+    plain.saveEvent({ id: 'evt_r14_old', endpointId: 'ep_r14', provider: 'shopify', eventType: 'orders/paid', headers: {}, rawBody: '{"email":"old@example.com"}', status: 'failed' });
+    // Unverified row with the same fingerprint must not suppress a later verified event
+    assert.strictEqual(plain.findRecentEventByBodyHash('ep_r14', plain.hashBody('{"email":"old@example.com"}', 'shopify', 'orders/paid'), 24), null);
+    plain.close();
+
+    const ha = createServer({ dbPath, autoStartWorker: false, production: false, encryptionKey: 'k'.repeat(32), encryptBodies: true });
+    try {
+      const row = ha.storage.db.prepare("SELECT raw_body, body_encrypted FROM events WHERE id = 'evt_r14_old'").get();
+      assert.strictEqual(row.body_encrypted, 1);
+      assert.ok(!Buffer.from(row.raw_body).toString('latin1').includes('old@example.com'));
+      assert.strictEqual(ha.storage.getEvent('evt_r14_old').raw_body.toString(), '{"email":"old@example.com"}');
+    } finally {
+      ha.worker.stop();
+      ha.storage.close();
+    }
+  } finally {
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.rmSync(dbPath + suffix, { force: true }); } catch (_) {}
+    }
   }
 });
 
