@@ -6,8 +6,8 @@ Only the latest release branch of HookArmor receives active security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.2.x   | :white_check_mark: |
-| < 1.2.0 | :x:                |
+| 1.3.x   | :white_check_mark: |
+| < 1.3.0 | :x:                |
 
 ## Reporting a Vulnerability
 

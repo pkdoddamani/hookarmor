@@ -248,8 +248,9 @@ class Storage {
     } catch (_) {}
   }
 
-  // Upsert. Omitting secret or alertWebhookUrl (undefined) keeps the stored value; '' clears it.
-  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders = {} }) {
+  // Upsert. Omitting secret, alertWebhookUrl or customHeaders (undefined) keeps the stored value; '' / {} clears it.
+  // (customHeaders must not have a destructuring default, or the keep-existing branch below never runs.)
+  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders }) {
     const existing = this.getEndpoint(id);
     const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
     const finalProvider = provider !== undefined ? provider : (existing ? existing.provider : null);
@@ -646,6 +647,21 @@ class Storage {
       WHERE id = ? AND status IN ('failed', 'pending', 'delivered')
     `).run(instanceId, eventId);
     return info.changes > 0;
+  }
+
+  // Renew the lease on claims this instance still holds in memory (queued or in flight),
+  // so recoverInterruptedDeliveries only reclaims events whose owner lost track of them
+  renewClaims(eventIds, instanceId) {
+    if (!instanceId || !Array.isArray(eventIds) || eventIds.length === 0) return 0;
+    const stmt = this.db.prepare(`
+      UPDATE events SET claimed_at = datetime('now')
+      WHERE id = ? AND status = 'replaying' AND claimed_by = ?
+    `);
+    let renewed = 0;
+    this.db.transaction(() => {
+      for (const id of eventIds) renewed += stmt.run(id, instanceId).changes;
+    })();
+    return renewed;
   }
 
   // Release claim for a single event if dispatch or recording failed

@@ -1937,6 +1937,178 @@ test('N14: razorpay scheme verifies HMAC-SHA256 signature, accepts traffic, and 
   }
 });
 
+// ---------------------------------------------------------------- review 2026-10-12
+
+function runCli(args) {
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile(process.execPath, [path.join(__dirname, '..', 'bin', 'hookarmor.js'), ...args], (err, stdout, stderr) => {
+      resolve({ code: err ? err.code : 0, stdout, stderr });
+    });
+  });
+}
+
+const apiPost = (ha, body) => fetch(`${ha.base}/api/endpoints`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+
+test('R1: dashboard default provider "generic" is unpinned, accepts Stripe signatures and auto-pins', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    const r = await apiPost(ha, { id: 'ep_r1', name: 'r1', targetUrl: target.url, provider: 'generic', secret: 'whsec_r1' });
+    assert.strictEqual(r.status, 200);
+    const body = JSON.stringify({ id: 'evt_r1', type: 'charge.succeeded' });
+    const res = await fetch(`${ha.base}/in/ep_r1`, { method: 'POST', headers: { ...JSON_HEADERS, 'Stripe-Signature': stripeSig('whsec_r1', body).header }, body });
+    assert.strictEqual(res.status, 200);
+    assert.ok(await waitFor(() => target.requests[0]));
+    assert.strictEqual(ha.storage.getEndpoint('ep_r1').provider, 'stripe');
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('R2: provider aliases svix/clerk normalise to clerk/svix; legacy "svix" rows accept Clerk traffic; unknown names rejected', async () => {
+  const target = await startTarget();
+  const ha = await startHA();
+  try {
+    const secret = 'whsec_' + crypto.randomBytes(24).toString('base64');
+    const r = await apiPost(ha, { id: 'ep_r2', name: 'r2', targetUrl: target.url, provider: 'svix', secret });
+    assert.strictEqual((await r.json()).provider, 'clerk/svix');
+    const bad = await apiPost(ha, { id: 'ep_r2b', name: 'r2b', targetUrl: target.url, provider: 'stripe-ish' });
+    assert.strictEqual(bad.status, 400);
+
+    // Row written by an older dashboard with the raw value 'svix'
+    ha.storage.db.prepare("UPDATE endpoints SET provider = 'svix' WHERE id = 'ep_r2'").run();
+    const body = JSON.stringify({ type: 'user.created' });
+    const ts = String(Math.floor(Date.now() / 1000));
+    const res = await fetch(`${ha.base}/in/ep_r2`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'svix-id': 'msg_r2', 'svix-timestamp': ts, 'svix-signature': svixSig(secret, 'msg_r2', ts, body) },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+  } finally {
+    await ha.close();
+    target.close();
+  }
+});
+
+test('R3: endpoint update keeps omitted name, retries, concurrency and custom headers (API and CLI)', async () => {
+  const ha = await startHA();
+  try {
+    let r = await apiPost(ha, { id: 'ep_r3', name: 'Orders', targetUrl: 'https://example.com/a', maxRetries: 20, concurrencyLimit: 9, customHeaders: { 'X-Api-Key': 'abc' } });
+    assert.strictEqual(r.status, 200);
+    r = await apiPost(ha, { id: 'ep_r3', targetUrl: 'https://example.com/b' });
+    assert.strictEqual(r.status, 200);
+    let ep = ha.storage.getEndpoint('ep_r3');
+    assert.deepStrictEqual([ep.name, ep.target_url, ep.max_retries, ep.concurrency_limit, ep.custom_headers['X-Api-Key']], ['Orders', 'https://example.com/b', 20, 9, 'abc']);
+
+    const cli = await runCli(['endpoints', 'add', '-i', 'ep_r3', '-t', 'https://example.com/c', '-u', ha.base]);
+    assert.strictEqual(cli.code, 0, cli.stderr);
+    ep = ha.storage.getEndpoint('ep_r3');
+    assert.deepStrictEqual([ep.name, ep.target_url, ep.max_retries, ep.custom_headers['X-Api-Key']], ['Orders', 'https://example.com/c', 20, 'abc']);
+
+    // A brand-new endpoint without a name is still rejected by the API
+    r = await apiPost(ha, { id: 'ep_r3_new', targetUrl: 'https://example.com/a' });
+    assert.strictEqual(r.status, 400);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R4: custom headers with CR/LF, reserved names or non-string values are rejected at save time', async () => {
+  const ha = await startHA();
+  try {
+    for (const customHeaders of [{ 'X-Token': 'a\r\nX-Evil: 1' }, { 'Content-Length': '1' }, { 'X-HookArmor-Signature': 'x' }, { 'Bad Name': 'x' }, { 'X-Obj': { a: 1 } }, 'not-an-object']) {
+      const r = await apiPost(ha, { id: 'ep_r4', name: 'r4', targetUrl: 'https://example.com/h', customHeaders });
+      assert.strictEqual(r.status, 400, `expected 400 for ${JSON.stringify(customHeaders)}`);
+    }
+    const ok = await apiPost(ha, { id: 'ep_r4', name: 'r4', targetUrl: 'https://example.com/h', customHeaders: { 'X-Tenant': 'acme' } });
+    assert.strictEqual(ok.status, 200);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R5: worker tick renews leases on events still held in memory and reclaims lost ones', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r5', name: 'r5', targetUrl: 'http://127.0.0.1:9/h', autoRetry: 0 });
+    for (const id of ['evt_r5_held', 'evt_r5_lost']) {
+      ha.storage.saveEvent({ id, endpointId: 'ep_r5', status: 'replaying', claimedBy: ha.instanceId, rawBody: '{}', headers: {} });
+    }
+    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now', '-3600 seconds')").run();
+    ha.dispatcher.heldEvents.add('evt_r5_held');
+    await ha.worker.tick();
+    ha.dispatcher.heldEvents.delete('evt_r5_held');
+    assert.strictEqual(ha.storage.getEvent('evt_r5_held').status, 'replaying', 'held event must keep its claim');
+    assert.strictEqual(ha.storage.getEvent('evt_r5_lost').status, 'failed', 'lost event must be reclaimed once its lease expires');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R6: a backed-up endpoint parks new events in SQLite instead of queueing them in memory', async () => {
+  const target = await startTarget({ hold: true });
+  const ha = await startHA({ maxQueuedPerEndpoint: 10 });
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r6', name: 'r6', targetUrl: target.url, concurrencyLimit: 1 });
+    for (let i = 0; i < 40; i++) {
+      const res = await fetch(`${ha.base}/in/ep_r6`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ id: `r6_${i}` }) });
+      assert.strictEqual(res.status, 200);
+    }
+    assert.ok(ha.dispatcher.queuedFor('ep_r6') <= 10, `queue ${ha.dispatcher.queuedFor('ep_r6')} exceeds cap`);
+    const parked = ha.storage.listEvents({ endpointId: 'ep_r6', limit: 100 }).filter((e) => e.status === 'pending' && !e.claimed_by).length;
+    assert.ok(parked >= 25, `expected parked events, got ${parked}`);
+  } finally {
+    target.release();
+    await ha.close();
+    target.close();
+  }
+});
+
+test('R7: a destination that trickles its response is cut off at the hard delivery deadline', async () => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200);
+    const t = setInterval(() => res.write('.'), 50);
+    res.on('close', () => clearInterval(t));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const ha = await startHA({ defaultTimeoutMs: 200, maxDeliveryMs: 600 });
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r7', name: 'r7', targetUrl: `http://127.0.0.1:${server.address().port}/h`, autoRetry: 0 });
+    await fetch(`${ha.base}/in/ep_r7`, { method: 'POST', headers: JSON_HEADERS, body: '{"id":"r7"}' });
+    const ev = await waitFor(() => {
+      const e = ha.storage.listEvents({ endpointId: 'ep_r7' })[0];
+      return e && e.status === 'failed' ? e : null;
+    }, 4000);
+    assert.ok(ev, 'delivery must fail instead of hanging');
+    assert.match(ev.last_error, /exceeded|closed|aborted/i);
+  } finally {
+    await ha.close();
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('R8: CLI "endpoints rm" explains the DLQ guard and deletes with --force', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_r8', name: 'r8', targetUrl: 'https://example.com/h' });
+    ha.storage.saveEvent({ id: 'evt_r8', endpointId: 'ep_r8', headers: {}, rawBody: '{}', status: 'failed' });
+    const refused = await runCli(['endpoints', 'rm', 'ep_r8', '-u', ha.base]);
+    assert.notStrictEqual(refused.code, 0);
+    assert.match(refused.stderr, /--force/);
+    assert.ok(ha.storage.getEndpoint('ep_r8'));
+    const forced = await runCli(['endpoints', 'rm', 'ep_r8', '--force', '-u', ha.base]);
+    assert.strictEqual(forced.code, 0, forced.stderr);
+    assert.strictEqual(ha.storage.getEndpoint('ep_r8'), null);
+  } finally {
+    await ha.close();
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

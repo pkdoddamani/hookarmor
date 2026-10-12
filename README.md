@@ -241,7 +241,7 @@ HookArmor returns an immediate `200 OK` to Stripe and Shopify (sub-10ms when idl
 HookArmor is 100% free and open-source under the MIT license, architected specifically as a **single-node, low-footprint buffer and sidecar** for monolithic and containerized applications.
 
 * **Single-Process Simplicity**: Operates entirely in a single Node.js process using embedded SQLite with Write-Ahead Logging (`WAL`) and `synchronous=FULL`. It consumes <50MB RAM and eliminates the operational overhead of running external message brokers (Kafka, RabbitMQ, SQS, or Redis).
-* **Scope & Boundaries**: HookArmor is intended to run on the same VPS, container host, or private network cluster as your downstream web application. It is **not** a distributed multi-region cluster broker.
+* **Scope & Boundaries**: HookArmor is intended to run on the same VPS, container host, or private network cluster as your downstream web application. It is **not** a distributed multi-region cluster broker. In that layout the destination has a private address, so set `HOOKARMOR_STRICT_SSRF=false` (strict mode is on by default in production and blocks private targets).
 * **Persistent Disk Required**: Because events are durably acknowledged to providers with immediate fsync commits, your container volume (`/app/data`) must be backed by a persistent disk or volume mount.
 
 ---
@@ -313,10 +313,11 @@ When `HOOKARMOR_API_KEY` is present:
 |---|---|---|
 | `HOOKARMOR_API_KEY` | none (required in production) | Admin key for the management API, dashboard and CLI |
 | `HOOKARMOR_ENCRYPTION_KEY` | none | 256-bit key enabling AES-256-GCM at-rest encryption for endpoint secrets |
-| `HOOKARMOR_STRICT_SSRF` | `true` in production, `false` locally | Block loopback, private-network and link-local delivery targets (checked on the resolved IP at delivery time). Cloud metadata addresses are always blocked |
+| `HOOKARMOR_STRICT_SSRF` | `true` in production (including the Docker image, which sets `NODE_ENV=production`), `false` locally | Block loopback, private-network and link-local delivery targets (checked on the resolved IP at delivery time). Cloud metadata addresses are always blocked. **Set it to `false` when your app is on the same host or private network** (e.g. `http://app:3000` in Docker Compose, a `10.x`/`172.16-31.x` VPC address), otherwise every such target is rejected |
+| `HOOKARMOR_MAX_QUEUED_IN_MEMORY` | `1000` | Deliveries per endpoint allowed to wait in memory for a concurrency slot; beyond this, new events are parked in SQLite and picked up by the retry worker |
 | `HOOKARMOR_SIGNING_SECRET` | none | Enables Mode B internal signatures |
 | `HOOKARMOR_DATA_DIR` | `./data` (current directory) | Where `hookarmor.db` is stored |
-| `HOOKARMOR_RETENTION_DAYS` | `0` (keep forever) | Delete delivered events older than this many days; failed events are always kept |
+| `HOOKARMOR_RETENTION_DAYS` | `30` | Delete delivered events older than this many days (`0` keeps them forever); failed events are always kept |
 | `HOOKARMOR_MAX_BODY` | `10mb` | Maximum webhook body size |
 | `HOOKARMOR_ENABLE_MOCK` | `false` in production | Mount the `/mock/*` simulation receiver |
 | `HOOKARMOR_CORS_ORIGINS` | none | Comma-separated origins allowed to call `/api` from a browser |

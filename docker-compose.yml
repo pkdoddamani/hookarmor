@@ -15,6 +15,11 @@ services:
       - NODE_ENV=production
       # Required: protects the management API. Generate with: openssl rand -hex 32
       - HOOKARMOR_API_KEY=${HOOKARMOR_API_KEY:?Set HOOKARMOR_API_KEY (generate with openssl rand -hex 32)}
+      # Recommended: encrypts endpoint secrets and custom headers at rest
+      # - HOOKARMOR_ENCRYPTION_KEY=${HOOKARMOR_ENCRYPTION_KEY}
+      # Uncomment if your app is on this host or Docker network (e.g. http://app:3000):
+      # production mode blocks private-network targets by default
+      # - HOOKARMOR_STRICT_SSRF=false
 
 volumes:
   hookarmor_data:

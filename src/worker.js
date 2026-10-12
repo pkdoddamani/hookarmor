@@ -10,6 +10,9 @@ class RetryWorker extends EventEmitter {
     this.pruneIntervalMs = options.pruneIntervalMs || 60 * 60 * 1000;
     this.lastPruneAt = 0;
     this.instanceId = options.instanceId || null;
+    this.leaseTimeoutSeconds = options.leaseTimeoutSeconds || 60;
+    // Endpoints whose in-memory queue is at least this long are left for later ticks
+    this.maxQueuedPerEndpoint = options.maxQueuedPerEndpoint || 1000;
     this.timer = null;
     this.isProcessing = false;
   }
@@ -44,8 +47,9 @@ class RetryWorker extends EventEmitter {
     try {
       if (this.instanceId) {
         this.storage.heartbeatInstance(this.instanceId);
+        this.storage.renewClaims(this.dispatcher.heldEventIds(), this.instanceId);
       }
-      this.storage.recoverInterruptedDeliveries(this.instanceId);
+      this.storage.recoverInterruptedDeliveries(this.leaseTimeoutSeconds);
       this.storage.reapStaleInstances(300);
 
       this.prune();
@@ -54,6 +58,7 @@ class RetryWorker extends EventEmitter {
       if (!eventsDue || eventsDue.length === 0) return;
 
       for (const event of eventsDue) {
+        if (this.dispatcher.queuedFor(event.endpoint_id) >= this.maxQueuedPerEndpoint) continue;
         const claimed = this.storage.claimEventForRetry(event.id, this.instanceId);
         if (!claimed) continue; // Another process or manual replay already claimed it
 
