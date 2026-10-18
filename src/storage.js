@@ -158,6 +158,7 @@ class Storage {
       this.db.pragma('journal_mode = WAL');
       // FULL fsyncs every commit: an event acknowledged with 200 OK survives power loss
       this.db.pragma('synchronous = FULL');
+      this.db.pragma('busy_timeout = 5000');
     } catch (e) {}
 
     this.db.exec(`
