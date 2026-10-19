@@ -971,7 +971,9 @@ function createServer(options = {}) {
   });
 
   app.get('/blog/:slug', (req, res) => {
-    const slug = req.params.slug.replace(/[^a-zA-Z0-9-_]/g, '');
+    let rawSlug = req.params.slug || '';
+    if (rawSlug.endsWith('.html')) rawSlug = rawSlug.slice(0, -5);
+    const slug = rawSlug.replace(/[^a-zA-Z0-9-_]/g, '');
     const fileName = `${slug}.html`;
     const filePath = path.join(__dirname, 'public', 'blog', fileName);
     if (fs.existsSync(filePath)) {
