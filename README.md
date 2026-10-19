@@ -236,6 +236,44 @@ HookArmor returns an immediate `200 OK` to Stripe and Shopify (sub-10ms when idl
 
 ---
 
+## 💾 Zero-Downtime Hot Backups & Disaster Recovery
+
+Because HookArmor runs SQLite in Write-Ahead Logging (`WAL`) mode, running a standard `cp hookarmor.db backup.db` while the server is writing can result in a corrupted database copy or missing WAL frames.
+
+Always use SQLite's native non-blocking **Online Backup API** or CLI `.backup` command. This safely checkpoints and streams a consistent snapshot to a backup file **without stopping the server or blocking webhook ingress**:
+
+### 1. Manual Hot Backup (Host or Docker)
+
+```bash
+# Direct on host (atomic, safe while live webhooks are ingesting):
+sqlite3 /app/data/hookarmor.db ".backup '/backups/hookarmor-$(date +%Y%m%d_%H%M%S).db'"
+
+# Inside Docker container:
+docker exec hookarmor sqlite3 /app/data/hookarmor.db ".backup '/app/data/backup-$(date +%Y%m%d_%H%M%S).db'"
+```
+
+### 2. Automated Daily Backup (Cron Example)
+
+```bash
+#!/bin/bash
+# /etc/cron.daily/hookarmor-backup
+BACKUP_DIR="/var/backups/hookarmor"
+mkdir -p "$BACKUP_DIR"
+sqlite3 /var/lib/hookarmor/hookarmor.db ".backup '$BACKUP_DIR/hookarmor-$(date +%F_%H%M%S).db'"
+# Prune backups older than 30 days
+find "$BACKUP_DIR" -name "hookarmor-*.db" -mtime +30 -delete
+```
+
+### 3. Disaster Recovery & Restoration
+
+To restore from a backup:
+1. Stop the HookArmor container or process: `docker stop hookarmor`
+2. Replace `hookarmor.db` with your backup: `cp /backups/hookarmor-20261019_120000.db /app/data/hookarmor.db`
+3. Remove any stale WAL files: `rm -f /app/data/hookarmor.db-wal /app/data/hookarmor.db-shm`
+4. Start HookArmor: `docker start hookarmor`. Incomplete deliveries will automatically resume from the database.
+
+---
+
 ## 🏗️ Architecture & Operational Scope
 
 HookArmor is 100% free and open-source under the MIT license, architected specifically as a **single-node, low-footprint buffer and sidecar** for monolithic and containerized applications.
@@ -273,9 +311,12 @@ openssl rand -hex 32
 
 # Set in your environment:
 export HOOKARMOR_ENCRYPTION_KEY=your_64_char_hex_key
+
+# Also encrypt all incoming webhook payload bodies (recommended for GDPR/financial PII):
+export HOOKARMOR_ENCRYPT_BODIES=true
 ```
 
-When enabled, all provider webhook secrets are encrypted with a unique 96-bit random IV and 128-bit authentication tag before being written to disk (`enc:v1:iv:tag:ciphertext`), preventing secret extraction even if database files or backups are compromised.
+When enabled, all provider webhook secrets, custom destination headers, and payload bodies are encrypted with a unique 96-bit random IV and 128-bit authentication tag before being written to disk (`enc:v1:iv:tag:ciphertext`), preventing data extraction even if disk images, snapshots, or database files are compromised. Existing plaintext bodies are automatically encrypted upon startup.
 
 ## 🔐 Production Security & Admin Authentication
 
