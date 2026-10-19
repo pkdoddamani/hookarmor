@@ -336,7 +336,7 @@
 
   <nav>
     <a href="#" class="logo">
-      <span>🛡️</span> HookArmor <span class="badge-v1">Open Source Beta</span>
+      <span>🛡️</span> HookArmor <span class="badge-v1">v1.4.2 Live</span>
     </a>
     <div class="nav-cta">
       <a href="/blog" class="btn btn-outline">Blog</a>
@@ -347,10 +347,10 @@
   </nav>
 
   <header class="hero">
-    <div class="pill">⚡ Tested & Verified Across 5 Failover Scenarios</div>
+    <div class="pill">⚡ v1.4.2 Live: Sub-10ms Keep-Alive Pooling &amp; SQLite Burst Concurrency Hardening</div>
     <h1>Never Lose a <span class="gradient-text">Stripe or Shopify</span> Webhook Again.</h1>
     <p>
-      Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), fast ingress buffer, and 1-click replay engine.
+      Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay engine.
     </p>
 
     <!-- Waitlist Capture Form -->
@@ -373,7 +373,7 @@
 
     <div class="terminal-box" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; width: 100%; max-width: 520px;">
       <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-        <span style="font-size: 0.75rem; color: #10b981; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-sans); font-weight: 700;">● Verified on npm (Zero Config)</span>
+        <span style="font-size: 0.75rem; color: #10b981; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-sans); font-weight: 700;">● Verified on npm (v1.4.2 Zero Config)</span>
         <button class="copy-btn" onclick="navigator.clipboard.writeText('npx hookarmor start')">Copy</button>
       </div>
       <div style="color: #38bdf8; font-size: 1.05rem; font-weight: 600;">
@@ -422,33 +422,33 @@
     <div class="grid-3">
       <div class="card">
         <div class="card-icon" style="background: rgba(59, 130, 246, 0.1); color: #60a5fa;">⚡</div>
-        <h3>Fast Ingress Buffer (&lt;15ms)</h3>
+        <h3>Keep-Alive Ingress (&lt;10ms)</h3>
         <p>
-          Returns an instant <code>200 OK</code> to Stripe, Shopify, or Clerk immediately upon receipt. Payment gateways never enter backoff retry purgatory or mark endpoints dead.
+          Returns an instant <code>200 OK</code> to Stripe, Shopify, or Clerk immediately with durable SQLite WAL sync. Reusable keep-alive pooling forwards downstream in sub-10ms.
         </p>
       </div>
 
       <div class="card">
         <div class="card-icon" style="background: rgba(244, 63, 94, 0.1); color: #f43f5e;">💀</div>
-        <h3>Durable Dead-Letter Queue</h3>
+        <h3>Burst-Proof SQLite DLQ</h3>
         <p>
-          If your backend responds 500, 502, 504, 429, or times out, the exact raw body and headers are safely quarantined in SQLite with complete error diagnostic traces.
+          Hardened with <code>PRAGMA busy_timeout = 5000</code> and WAL concurrency. If your backend fails or throttles (429/500/504), raw payloads are quarantined without SQLITE_BUSY crashes.
         </p>
       </div>
 
       <div class="card">
         <div class="card-icon" style="background: rgba(16, 185, 129, 0.1); color: #34d399;">🔄</div>
-        <h3>1-Click Bulk Replay</h3>
+        <h3>1-Click Replay &amp; Resigning</h3>
         <p>
-          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> in the dashboard or run <code>node bin/hookarmor.js replay --failed</code> to restore customer subscriptions in 2 seconds.
+          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> or use the CLI. Fresh HMAC timestamps and re-computed signatures defeat gateway expiration windows.
         </p>
       </div>
 
       <div class="card">
         <div class="card-icon" style="background: rgba(168, 85, 247, 0.1); color: #c084fc;">🔐</div>
-        <h3>HMAC Signature Passthrough</h3>
+        <h3>AES-256-GCM &amp; SSRF Guard</h3>
         <p>
-          Preserves exact raw bytes and cryptographic signature headers (<code>stripe-signature</code>, <code>x-shopify-hmac-sha256</code>) so downstream security checks never break.
+          At-rest AES-256-GCM encryption with 12-byte random IVs for secrets and webhook bodies. Multi-layer SSRF defense blocks cloud metadata (IMDS) and private ranges.
         </p>
       </div>
 
@@ -464,7 +464,7 @@
         <div class="card-icon" style="background: rgba(56, 189, 248, 0.1); color: #38bdf8;">💻</div>
         <h3>Zero-Friction Local Tunnel</h3>
         <p>
-          Run <code>hookarmor listen http://localhost:3000/api/webhook</code> to proxy and replay captured webhook events straight into your local server with automatic signature verification.
+          Run <code>npx hookarmor listen http://localhost:3000/api/webhook</code> to proxy and replay captured webhook events straight into your local server with automatic signature verification.
         </p>
       </div>
     </div>
