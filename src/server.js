@@ -58,13 +58,21 @@ function clampInt(value, fallback, min, max) {
   return Math.min(Math.max(n, min), max);
 }
 
-// Fixed-window in-memory rate limiter keyed by client IP
-function createRateLimiter({ limit, windowMs }) {
+// Fixed-window in-memory rate limiter keyed by client IP with hard FIFO capacity bounds
+function createRateLimiter({ limit, windowMs, maxKeys = 10000 }) {
   const hits = new Map();
   return (key) => {
     const now = Date.now();
-    if (hits.size > 10000) {
-      for (const [k, v] of hits) if (v.resetAt <= now) hits.delete(k);
+    if (hits.size > maxKeys) {
+      for (const [k, v] of hits) {
+        if (v.resetAt <= now) hits.delete(k);
+      }
+      // Hard cap to prevent memory exhaustion under distributed IP floods
+      while (hits.size >= maxKeys) {
+        const oldestKey = hits.keys().next().value;
+        if (oldestKey === undefined) break;
+        hits.delete(oldestKey);
+      }
     }
     const entry = hits.get(key);
     if (!entry || entry.resetAt <= now) {
@@ -270,6 +278,7 @@ function createServer(options = {}) {
 
   server.on('close', () => {
     worker.stop();
+    dispatcher.destroy();
   });
 
   function tokenMatches(token) {
@@ -308,7 +317,8 @@ function createServer(options = {}) {
   });
 
   wss.on('connection', (socket) => {
-    socket.isAuthed = !apiKey || isDemoMode;
+    // If an API key is configured, WebSocket ALWAYS requires authentication (even in demo mode)
+    socket.isAuthed = !apiKey;
     let authTimer = null;
     if (!socket.isAuthed) {
       authTimer = setTimeout(() => { if (!socket.isAuthed) socket.close(4001, 'Authentication required'); }, 5000);

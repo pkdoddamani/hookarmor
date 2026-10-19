@@ -22,7 +22,11 @@ class RetryWorker extends EventEmitter {
 
   start() {
     if (this.timer) return;
-    this.timer = setInterval(() => this.tick(), this.intervalMs);
+    this.timer = setInterval(() => {
+      this.tick().catch(err => {
+        this.emit('error', err);
+      });
+    }, this.intervalMs);
     // Unref timer so it doesn't hold Node process open during graceful shutdown or tests if desired
     if (this.timer.unref) this.timer.unref();
     this.emit('started');

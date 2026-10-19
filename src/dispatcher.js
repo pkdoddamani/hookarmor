@@ -77,6 +77,26 @@ class Dispatcher extends EventEmitter {
     this.activeDeliveries = 0;
     // Event ids this process holds in memory (queued or in flight); the worker renews their leases
     this.heldEvents = new Set();
+    // Reusable connection pools for high-throughput webhook delivery
+    this.httpAgent = options.httpAgent || new http.Agent({
+      keepAlive: true,
+      keepAliveMsecs: 10000,
+      maxSockets: options.maxSockets || 50,
+      maxFreeSockets: 10
+    });
+    this.httpsAgent = options.httpsAgent || new https.Agent({
+      keepAlive: true,
+      keepAliveMsecs: 10000,
+      maxSockets: options.maxSockets || 50,
+      maxFreeSockets: 10
+    });
+  }
+
+  destroy() {
+    try {
+      if (this.httpAgent && typeof this.httpAgent.destroy === 'function') this.httpAgent.destroy();
+      if (this.httpsAgent && typeof this.httpsAgent.destroy === 'function') this.httpsAgent.destroy();
+    } catch (_) {}
   }
 
   heldEventIds() {
@@ -535,11 +555,13 @@ class Dispatcher extends EventEmitter {
         const url = new URL(targetUrl);
         const isHttps = url.protocol === 'https:';
         const client = isHttps ? https : http;
+        const agent = isHttps ? this.httpsAgent : this.httpAgent;
 
         let gotResponse = false;
         const req = client.request(url, {
           method: 'POST',
           headers,
+          agent,
           timeout: this.defaultTimeoutMs,
           lookup: guardedLookup(this.strictSSRF)
         }, (res) => {
@@ -547,11 +569,14 @@ class Dispatcher extends EventEmitter {
           let responseBody = '';
           res.setEncoding('utf8');
           res.on('data', chunk => {
-            if (responseBody.length < 4000) {
-              responseBody += chunk;
+            if (responseBody.length < 2000) {
+              responseBody += chunk.slice(0, 2000 - responseBody.length);
             }
           });
-          res.on('end', () => finish({ statusCode: res.statusCode || 0, responseBody }));
+          res.on('end', () => {
+            const cleanBody = responseBody.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+            finish({ statusCode: res.statusCode || 0, responseBody: cleanBody });
+          });
           res.on('error', (err) => finish({ errorMessage: err.message }));
           res.on('aborted', () => finish({ errorMessage: 'Response aborted by destination' }));
           res.on('close', () => {

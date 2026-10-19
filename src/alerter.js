@@ -64,7 +64,7 @@ class Alerter {
             { title: 'Target URL', value: safeUrl(endpoint.target_url), short: true },
             { title: 'Status Code', value: String(attempt.statusCode || 'Timeout/Error'), short: true },
             { title: 'Attempt', value: `${event.attempts + 1} / ${endpoint.max_retries}`, short: true },
-            { title: 'Error', value: attempt.errorMessage || 'Unknown error', short: false }
+            { title: 'Error', value: String(attempt.errorMessage || 'Unknown error').slice(0, 500), short: false }
           ],
           footer: 'HookArmor Webhook Sentinel',
           ts: Math.floor(Date.now() / 1000)
@@ -73,7 +73,7 @@ class Alerter {
       embeds: [
         {
           title: `🚨 Webhook Delivery Failed: ${endpoint.name}`,
-          description: `**Event:** \`${event.event_type || event.id}\`\n**Target:** \`${safeUrl(endpoint.target_url)}\`\n**HTTP Status:** \`${attempt.statusCode || 'Error'}\`\n**Error:** ${attempt.errorMessage || 'No response'}`,
+          description: `**Event:** \`${event.event_type || event.id}\`\n**Target:** \`${safeUrl(endpoint.target_url)}\`\n**HTTP Status:** \`${attempt.statusCode || 'Error'}\`\n**Error:** ${String(attempt.errorMessage || 'No response').slice(0, 500)}`,
           color: 14689316,
           timestamp: new Date().toISOString()
         }
