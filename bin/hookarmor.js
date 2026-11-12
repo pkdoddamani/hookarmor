@@ -551,4 +551,24 @@ endpointsCmd
     }
   });
 
+program
+  .command('backup [destination]')
+  .description('Create a consistent online hot-backup of the SQLite database')
+  .option('--db <path>', 'Database path', process.env.HOOKARMOR_DB_PATH || './hookarmor.db')
+  .action(async (destination, opts) => {
+    const dest = destination || `hookarmor-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
+    const Storage = require('../src/storage');
+    const storage = new Storage(opts.db);
+    try {
+      console.log(chalk.blue(`Initiating hot backup from ${opts.db} to ${dest}...`));
+      await storage.backup(dest);
+      console.log(chalk.green.bold(`✔ Backup completed successfully: ${dest}`));
+    } catch (err) {
+      console.error(chalk.red.bold(`✖ Backup failed: ${err.message}`));
+      process.exitCode = 1;
+    } finally {
+      storage.close();
+    }
+  });
+
 program.parse();

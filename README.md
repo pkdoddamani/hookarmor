@@ -245,11 +245,14 @@ Always use SQLite's native non-blocking **Online Backup API** or CLI `.backup` c
 ### 1. Manual Hot Backup (Host or Docker)
 
 ```bash
-# Direct on host (atomic, safe while live webhooks are ingesting):
-sqlite3 /app/data/hookarmor.db ".backup '/backups/hookarmor-$(date +%Y%m%d_%H%M%S).db'"
+# Using HookArmor CLI (works everywhere, including inside Docker with zero external dependencies):
+hookarmor backup /backups/hookarmor-$(date +%Y%m%d_%H%M%S).db --db /app/data/hookarmor.db
 
 # Inside Docker container:
-docker exec hookarmor sqlite3 /app/data/hookarmor.db ".backup '/app/data/backup-$(date +%Y%m%d_%H%M%S).db'"
+docker exec hookarmor node bin/hookarmor.js backup /app/data/backup-$(date +%Y%m%d_%H%M%S).db --db /app/data/hookarmor.db
+
+# Direct on host with sqlite3 CLI (atomic, safe while live webhooks are ingesting):
+sqlite3 /app/data/hookarmor.db ".backup '/backups/hookarmor-$(date +%Y%m%d_%H%M%S).db'"
 ```
 
 ### 2. Automated Daily Backup (Cron Example)

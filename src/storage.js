@@ -296,6 +296,7 @@ class Storage {
       : (existing ? JSON.stringify(existing.custom_headers || {}) : '{}');
     const encryptedSecret = encryptSecret(finalSecret, this.encryptionKey);
     const encryptedHeaders = this.encryptionKey ? encryptSecret(finalHeaders, this.encryptionKey) : finalHeaders;
+    const cleanAutoRetry = (autoRetry === false || autoRetry === 0 || autoRetry === '0' || autoRetry === 'false' || autoRetry === 'no' || autoRetry === 'off') ? 0 : (autoRetry ? 1 : 0);
     this.db.prepare(`
       INSERT INTO endpoints (id, name, target_url, secret, provider, alert_webhook_url, auto_retry, max_retries, concurrency_limit, custom_headers)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -309,7 +310,7 @@ class Storage {
         max_retries = excluded.max_retries,
         concurrency_limit = excluded.concurrency_limit,
         custom_headers = excluded.custom_headers
-    `).run(id, name, targetUrl, encryptedSecret || '', finalProvider || null, finalAlert || '', autoRetry ? 1 : 0, maxRetries, concurrencyLimit || 5, encryptedHeaders);
+    `).run(id, name, targetUrl, encryptedSecret || '', finalProvider || null, finalAlert || '', cleanAutoRetry, maxRetries, concurrencyLimit || 5, encryptedHeaders);
     return this.getEndpoint(id);
   }
 
@@ -904,6 +905,14 @@ class Storage {
 
   listWaitlist() {
     return this.db.prepare('SELECT * FROM waitlist ORDER BY created_at DESC').all();
+  }
+
+  // Native non-blocking online hot backup using SQLite Online Backup API
+  async backup(destinationPath) {
+    if (!destinationPath || typeof destinationPath !== 'string') {
+      throw new Error('destinationPath is required for database backup');
+    }
+    return this.db.backup(destinationPath);
   }
 
   close() {

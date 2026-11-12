@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 const WebSocket = require('ws');
 const { createServer } = require('../src/server');
+const Storage = require('../src/storage');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -2243,6 +2244,116 @@ test('R14: turning on body encryption also encrypts bodies stored before it, and
   } finally {
     for (const suffix of ['', '-wal', '-shm']) {
       try { fs.rmSync(dbPath + suffix, { force: true }); } catch (_) {}
+    }
+  }
+});
+
+test('R15: URL credentials in targetUrl and alertWebhookUrl are masked in API output', async () => {
+  const ha = await startHA();
+  try {
+    const res = await fetch(`${ha.base}/api/endpoints`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        id: 'ep_r15',
+        name: 'Sensitive URL EP',
+        targetUrl: 'https://webhookuser:supersecretpass@destination.example.com/hook',
+        alertWebhookUrl: 'https://botuser:slacktokenpass@hooks.slack.com/services/T123/B456/XYZ789'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.target_url, 'https://webhookuser:********@destination.example.com/hook');
+    assert.strictEqual(data.alert_webhook_url, 'https://botuser:********@hooks.slack.com/services/T123/B456/XYZ789');
+
+    // Storage still keeps the unmasked target_url for actual dispatch
+    const stored = ha.storage.getEndpoint('ep_r15');
+    assert.strictEqual(stored.target_url, 'https://webhookuser:supersecretpass@destination.example.com/hook');
+    assert.strictEqual(stored.alert_webhook_url, 'https://botuser:slacktokenpass@hooks.slack.com/services/T123/B456/XYZ789');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R16: autoRetry string values "false" and "0" disable retries correctly', async () => {
+  const ha = await startHA();
+  try {
+    await fetch(`${ha.base}/api/endpoints`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'ep_r16_str_false', name: 'Off', targetUrl: 'https://example.com/off', autoRetry: 'false' })
+    });
+    await fetch(`${ha.base}/api/endpoints`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'ep_r16_num_zero', name: 'Zero', targetUrl: 'https://example.com/zero', autoRetry: 0 })
+    });
+    await fetch(`${ha.base}/api/endpoints`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'ep_r16_str_zero', name: 'StrZero', targetUrl: 'https://example.com/strzero', autoRetry: '0' })
+    });
+    assert.strictEqual(ha.storage.getEndpoint('ep_r16_str_false').auto_retry, 0);
+    assert.strictEqual(ha.storage.getEndpoint('ep_r16_num_zero').auto_retry, 0);
+    assert.strictEqual(ha.storage.getEndpoint('ep_r16_str_zero').auto_retry, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R17: WebSocket authentication rate-limiting locks out brute-force attempts with code 4029', async () => {
+  const ha = await startHA({ apiKey: 'secret-vault-key-12345', authFailureLimit: 3 });
+  try {
+    const wsUrl = ha.base.replace('http', 'ws') + '/ws';
+    // Send 3 invalid auth frames to exhaust allowance
+    for (let i = 0; i < 3; i++) {
+      await new Promise((resolve) => {
+        const ws = new WebSocket(wsUrl);
+        ws.on('open', () => {
+          ws.send(JSON.stringify({ type: 'auth', token: 'wrong-key-' + i }));
+        });
+        ws.on('close', (code) => {
+          resolve(code);
+        });
+      });
+    }
+
+    // Next connection attempt is rejected with 4029
+    const blockedCode = await new Promise((resolve) => {
+      const ws = new WebSocket(wsUrl);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ type: 'auth', token: 'wrong-key-final' }));
+      });
+      ws.on('close', (code) => {
+        resolve(code);
+      });
+    });
+    assert.strictEqual(blockedCode, 4029, 'Locked out IP must receive WebSocket close code 4029');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R18: Storage.backup creates a consistent online hot-backup of the SQLite database', async () => {
+  const dbPath = path.join(os.tmpdir(), `r18-src-${Date.now()}.db`);
+  const backupPath = path.join(os.tmpdir(), `r18-backup-${Date.now()}.db`);
+  try {
+    const s1 = new Storage(dbPath);
+    s1.createEndpoint({ id: 'ep_r18', name: 'Backup Test EP', targetUrl: 'https://example.com/backup' });
+    await s1.backup(backupPath);
+    s1.close();
+
+    assert.ok(fs.existsSync(backupPath), 'Backup database file must exist');
+    const s2 = new Storage(backupPath);
+    const ep = s2.getEndpoint('ep_r18');
+    assert.ok(ep);
+    assert.strictEqual(ep.name, 'Backup Test EP');
+    s2.close();
+  } finally {
+    for (const p of [dbPath, backupPath]) {
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { fs.rmSync(p + suffix, { force: true }); } catch (_) {}
+      }
     }
   }
 });

@@ -129,7 +129,42 @@ function validateCustomHeaders(value) {
   return { headers: clean };
 }
 
-function publicEndpoint(ep) {
+function maskUrlCredentials(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return urlStr;
+  try {
+    const u = new URL(urlStr);
+    if (u.password) {
+      u.password = '********';
+      return u.toString();
+    }
+    return urlStr;
+  } catch (_) {
+    return urlStr;
+  }
+}
+
+function maskAlertWebhookUrl(urlStr, isDemo = false) {
+  if (!urlStr || typeof urlStr !== 'string') return urlStr;
+  try {
+    const u = new URL(urlStr);
+    if (u.password) {
+      u.password = '********';
+    }
+    if (isDemo && u.pathname && u.pathname.length > 8) {
+      const parts = u.pathname.split('/');
+      const last = parts[parts.length - 1];
+      if (last.length > 4) {
+        parts[parts.length - 1] = last.slice(0, 4) + '********';
+        u.pathname = parts.join('/');
+      }
+    }
+    return u.toString();
+  } catch (_) {
+    return urlStr;
+  }
+}
+
+function publicEndpoint(ep, isDemo = false) {
   if (!ep) return ep;
   const { secret, custom_headers, ...rest } = ep;
   let maskedHeaders = {};
@@ -144,6 +179,8 @@ function publicEndpoint(ep) {
   }
   return {
     ...rest,
+    target_url: maskUrlCredentials(rest.target_url),
+    alert_webhook_url: maskAlertWebhookUrl(rest.alert_webhook_url, isDemo),
     custom_headers: maskedHeaders,
     has_secret: Boolean(secret),
     disablementRisk: assessDisablementRisk(ep)
@@ -344,10 +381,26 @@ function createServer(options = {}) {
   // could stop the whole gateway with a single oversized frame.
   wss.on('error', (err) => console.error('[WebSocket] server error:', err.message));
 
-  wss.on('connection', (socket) => {
+  const getWsClientIp = (req) => {
+    if (trustProxy && req && req.headers && req.headers['x-forwarded-for']) {
+      const forwarded = String(req.headers['x-forwarded-for']).split(',')[0].trim();
+      if (forwarded) return forwarded;
+    }
+    return (req && req.socket && req.socket.remoteAddress) || '127.0.0.1';
+  };
+
+  wss.on('connection', (socket, req) => {
     socket.on('error', () => { try { socket.terminate(); } catch (_) {} });
+    const clientIp = getWsClientIp(req);
+
     // If an API key is configured, WebSocket ALWAYS requires authentication (even in demo mode)
     socket.isAuthed = !apiKey;
+
+    if (!socket.isAuthed && isRateLimited(authFailureLimiter, clientIp)) {
+      socket.close(4029, 'Too many failed authentication attempts; try again later');
+      return;
+    }
+
     let authTimer = null;
     if (!socket.isAuthed) {
       authTimer = setTimeout(() => { if (!socket.isAuthed) socket.close(4001, 'Authentication required'); }, 5000);
@@ -358,12 +411,18 @@ function createServer(options = {}) {
       try {
         const msg = JSON.parse(String(raw));
         if (msg.type === 'auth') {
+          if (isRateLimited(authFailureLimiter, clientIp)) {
+            socket.close(4029, 'Too many failed authentication attempts; try again later');
+            return;
+          }
           if (tokenMatches(msg.token)) {
             socket.isAuthed = true;
             if (authTimer) clearTimeout(authTimer);
             socket.send(JSON.stringify({ type: 'auth:ok' }));
           } else {
-            socket.close(4001, 'Invalid API key');
+            authFailureLimiter(clientIp);
+            const isBlocked = isRateLimited(authFailureLimiter, clientIp);
+            socket.close(isBlocked ? 4029 : 4001, isBlocked ? 'Too many failed authentication attempts; try again later' : 'Invalid API key');
           }
         }
       } catch (e) {}
@@ -443,7 +502,7 @@ function createServer(options = {}) {
     return { total: r.total, signature: r.signature, scheme_mismatch: r.scheme_mismatch, rate_limited: r.rate_limited, capacity: r.capacity, lastAt: r.lastAt, lastReason: r.lastReason };
   }
   const describeEndpoint = (ep) => {
-    const out = publicEndpoint(ep);
+    const out = publicEndpoint(ep, isDemoMode);
     if (out) out.ingressRejections = ingressRejectSummary(ep.id);
     return out;
   };
@@ -811,6 +870,9 @@ function createServer(options = {}) {
       }
     }
     const rawConcurrency = concurrencyLimit !== undefined ? concurrencyLimit : concurrency_limit;
+    const cleanAutoRetry = autoRetry !== undefined
+      ? (autoRetry === false || autoRetry === 0 || autoRetry === '0' || autoRetry === 'false' || autoRetry === 'no' || autoRetry === 'off' ? 0 : 1)
+      : (existing ? existing.auto_retry : 1);
     const endpoint = storage.createEndpoint({
       id,
       name: name !== undefined ? name : existing.name,
@@ -818,7 +880,7 @@ function createServer(options = {}) {
       secret,
       provider: cleanProvider,
       alertWebhookUrl: alertWebhookUrl === undefined ? undefined : String(alertWebhookUrl || ''),
-      autoRetry: autoRetry !== undefined ? autoRetry : (existing ? existing.auto_retry : 1),
+      autoRetry: cleanAutoRetry,
       maxRetries: clampInt(maxRetries, existing ? existing.max_retries : 5, 1, 50),
       concurrencyLimit: clampInt(rawConcurrency, existing ? existing.concurrency_limit : 5, 1, 100),
       customHeaders: headerCheck.headers

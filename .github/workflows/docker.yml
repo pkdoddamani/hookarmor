@@ -28,6 +28,9 @@ jobs:
       - name: Validate Dashboard Inline Script Syntax
         run: node -e "const fs = require('fs'); const html = fs.readFileSync('src/public/index.html', 'utf8'); const script = html.match(/<script>([\s\S]*?)<\/script>/i)[1]; new Function(script);"
 
+      - name: Run dependency audit
+        run: npm audit --omit=dev
+
       - name: Run test suite
         run: npm test
 
