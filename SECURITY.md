@@ -16,7 +16,7 @@ We take the security of HookArmor and the webhook integrity of applications usin
 If you believe you have discovered a security vulnerability in HookArmor:
 
 1. **Do NOT report security vulnerabilities via public GitHub issues or discussions.**
-2. Send a detailed report directly via email to: `security@hookarmor.dev` (or open a private GitHub Security Advisory).
+2. Send a detailed report directly via email to: `security@hookarmour.dev` (or open a private GitHub Security Advisory).
 3. Please include:
    - Type of issue (e.g. signature verification bypass, SSRF, authentication bypass, data leak)
    - Step-by-step reproduction instructions or proof-of-concept script

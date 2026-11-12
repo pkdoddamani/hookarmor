@@ -64,7 +64,8 @@ class Alerter {
             { title: 'Target URL', value: safeUrl(endpoint.target_url), short: true },
             { title: 'Status Code', value: String(attempt.statusCode || 'Timeout/Error'), short: true },
             { title: 'Attempt', value: `${event.attempts + 1} / ${endpoint.max_retries}`, short: true },
-            { title: 'Error', value: String(attempt.errorMessage || 'Unknown error').slice(0, 500), short: false }
+            { title: 'Error', value: String(attempt.errorMessage || 'Unknown error').slice(0, 500), short: false },
+            ...(attempt.suppressed > 0 ? [{ title: 'Also failing', value: `${attempt.suppressed} more failure alert(s) for this endpoint were combined into this one`, short: false }] : [])
           ],
           footer: 'HookArmor Webhook Sentinel',
           ts: Math.floor(Date.now() / 1000)
@@ -75,6 +76,51 @@ class Alerter {
           title: `🚨 Webhook Delivery Failed: ${endpoint.name}`,
           description: `**Event:** \`${event.event_type || event.id}\`\n**Target:** \`${safeUrl(endpoint.target_url)}\`\n**HTTP Status:** \`${attempt.statusCode || 'Error'}\`\n**Error:** ${String(attempt.errorMessage || 'No response').slice(0, 500)}`,
           color: 14689316,
+          timestamp: new Date().toISOString()
+        }
+      ]
+    };
+
+    return Alerter._dispatchPost(alertWebhookUrl, payload, strictSSRF);
+  }
+
+  // Webhooks refused at ingress (bad signature, wrong provider scheme, rate limit, full queue).
+  // These are the failures the provider counts towards disabling the subscription.
+  static async sendIngressRejectionAlert(alertWebhookUrl, { endpoint, kind, reason, count }, { strictSSRF = false } = {}) {
+    if (!alertWebhookUrl) return;
+
+    const check = checkUrl(alertWebhookUrl, strictSSRF);
+    if (!check.ok) {
+      console.error(`[Alerter] Alert webhook URL blocked: ${check.reason}`);
+      return;
+    }
+
+    const hint = kind === 'signature' || kind === 'scheme_mismatch'
+      ? 'If the provider signing secret was rotated, update it on this endpoint. Until then every webhook is refused and the provider records a failed delivery.'
+      : 'The sender is receiving errors from HookArmor and will retry on its own schedule.';
+    const title = `HookArmor is REJECTING incoming webhooks for ${endpoint.name}`;
+    const payload = {
+      text: `🚨 [HookArmor Ingress] ${title}`,
+      attachments: [
+        {
+          color: '#dc2626',
+          title,
+          text: hint,
+          fields: [
+            { title: 'Endpoint', value: `${endpoint.name} (${endpoint.id})`, short: true },
+            { title: 'Reason', value: String(kind), short: true },
+            { title: 'Rejected in the last 15 min', value: String(count), short: true },
+            { title: 'Detail', value: String(reason || '').slice(0, 300), short: false }
+          ],
+          footer: 'HookArmor Ingress Sentinel',
+          ts: Math.floor(Date.now() / 1000)
+        }
+      ],
+      embeds: [
+        {
+          title: `🚨 ${title}`,
+          description: `**Reason:** \`${kind}\` (${String(reason || '').slice(0, 300)})\n**Rejected in the last 15 min:** \`${count}\`\n\n${hint}`,
+          color: 14427686,
           timestamp: new Date().toISOString()
         }
       ]

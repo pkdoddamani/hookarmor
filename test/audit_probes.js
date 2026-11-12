@@ -466,8 +466,9 @@ async function runProbes() {
       });
 
       const { execFile } = require('child_process');
+      const cliPath = path.resolve(__dirname, '../bin/hookarmor.js');
       const runCli = (args) => new Promise((resolve, reject) => {
-        execFile(process.execPath, ['bin/hookarmor.js', ...args, '-u', baseUrl], (err, stdout, stderr) => {
+        execFile(process.execPath, [cliPath, ...args, '-u', baseUrl], (err, stdout, stderr) => {
           if (err) return reject(new Error(stderr || err.message));
           resolve(stdout);
         });

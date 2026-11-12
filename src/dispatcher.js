@@ -77,6 +77,13 @@ class Dispatcher extends EventEmitter {
     this.activeDeliveries = 0;
     // Event ids this process holds in memory (queued or in flight); the worker renews their leases
     this.heldEvents = new Set();
+    // Per-event failure alerts are combined per endpoint: during an outage every new event fails once,
+    // which used to mean one chat message per event (and chat webhooks rate-limit and drop the rest)
+    this.alertCooldownMs = options.alertCooldownMs !== undefined
+      ? options.alertCooldownMs
+      : Math.max(0, parseInt(process.env.HOOKARMOR_ALERT_COOLDOWN_SECONDS || '60', 10) || 0) * 1000;
+    this.lastFailureAlertAt = new Map();
+    this.suppressedFailureAlerts = new Map();
     // Reusable connection pools for high-throughput webhook delivery
     this.httpAgent = options.httpAgent || new http.Agent({
       keepAlive: true,
@@ -289,9 +296,9 @@ class Dispatcher extends EventEmitter {
     }
   }
 
-  // Calculate exponential backoff with jitter: 30s, 2m, 10m, 30m, 2h
+  // Calculate exponential backoff with jitter: 30s, 2m, 10m, 30m, 2h, 5h, 12h, 24h, 48h, 72h (Stripe 3-day alignment)
   calculateNextRetry(attempt) {
-    const intervals = [30, 120, 600, 1800, 7200]; // seconds
+    const intervals = [30, 120, 600, 1800, 7200, 18000, 43200, 86400, 172800, 259200]; // seconds
     const base = intervals[Math.min(attempt, intervals.length - 1)];
     const jitter = Math.floor(Math.random() * (base * 0.2));
     const delaySec = base + jitter;
@@ -393,15 +400,12 @@ class Dispatcher extends EventEmitter {
       for (const h of [
         'stripe-signature',
         'x-shopify-hmac-sha256',
-        'x-shopify-topic',
         'x-hub-signature-256',
         'x-hub-signature',
-        'svix-id',
         'svix-signature',
         'svix-timestamp',
         'clerk-signature',
-        'x-razorpay-signature',
-        'x-razorpay-event-id'
+        'x-razorpay-signature'
       ]) {
         delete headers[h];
       }
@@ -494,11 +498,25 @@ class Dispatcher extends EventEmitter {
           const isFirstFailure = (event.attempts === 0);
           const isExhausted = !nextRetryAt;
           if (isFirstFailure || isExhausted) {
-            await Alerter.sendAlert(alertUrl, {
-              event,
-              endpoint,
-              attempt: { statusCode, errorMessage: message, latencyMs, isExhausted }
-            }, { strictSSRF: this.strictSSRF });
+            // Separate cooldowns, so "started failing" and "gave up retrying" both get through
+            const alertKey = `${endpoint.id}:${isExhausted ? 'exhausted' : 'first'}`;
+            const nowMs = Date.now();
+            if (nowMs - (this.lastFailureAlertAt.get(alertKey) || 0) >= this.alertCooldownMs) {
+              this.lastFailureAlertAt.set(alertKey, nowMs);
+              const suppressed = this.suppressedFailureAlerts.get(alertKey) || 0;
+              this.suppressedFailureAlerts.delete(alertKey);
+              try {
+                await Alerter.sendAlert(alertUrl, {
+                  event,
+                  endpoint,
+                  attempt: { statusCode, errorMessage: message, latencyMs, isExhausted, suppressed }
+                }, { strictSSRF: this.strictSSRF });
+              } catch (alertErr) {
+                console.error(`[Dispatcher] Failure alert failed for ${endpoint.id}:`, alertErr.message);
+              }
+            } else {
+              this.suppressedFailureAlerts.set(alertKey, (this.suppressedFailureAlerts.get(alertKey) || 0) + 1);
+            }
           }
 
           // Webhook Disablement Sentinel: evaluate streak against provider policy

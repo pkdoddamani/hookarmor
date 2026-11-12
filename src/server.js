@@ -11,6 +11,7 @@ const Dispatcher = require('./dispatcher');
 const RetryWorker = require('./worker');
 const { checkUrl } = require('./netguard');
 const { assessDisablementRisk } = require('./sentinel');
+const Alerter = require('./alerter');
 
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const ENDPOINT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -61,7 +62,7 @@ function clampInt(value, fallback, min, max) {
 // Fixed-window in-memory rate limiter keyed by client IP with hard FIFO capacity bounds
 function createRateLimiter({ limit, windowMs, maxKeys = 10000 }) {
   const hits = new Map();
-  return (key) => {
+  const hit = (key) => {
     const now = Date.now();
     if (hits.size > maxKeys) {
       for (const [k, v] of hits) {
@@ -82,6 +83,16 @@ function createRateLimiter({ limit, windowMs, maxKeys = 10000 }) {
     entry.count++;
     return entry.count <= limit;
   };
+  hit.peek = (key) => {
+    const entry = hits.get(key);
+    return Boolean(entry && entry.resetAt > Date.now() && entry.count >= limit);
+  };
+  return hit;
+}
+
+// True once `key` has used up its allowance in the current window. Does not count a hit.
+function isRateLimited(limiter, key) {
+  return typeof limiter.peek === 'function' && limiter.peek(key);
 }
 
 // Headers HookArmor sets itself or that would corrupt the outbound request
@@ -185,6 +196,18 @@ function createServer(options = {}) {
       'HOOKARMOR_API_KEY is required in production: without it the management API (events, endpoints, replays) is open to anyone. ' +
       'Generate one with `openssl rand -hex 32`. Set HOOKARMOR_ALLOW_NO_AUTH=true only if the instance is not reachable from untrusted networks.'
     );
+  }
+
+  if (apiKey && String(apiKey).length < 32 && process.env.NODE_ENV !== 'test' && !createServer._warnedWeakKey) {
+    createServer._warnedWeakKey = true;
+    console.warn('[Security Warning] HOOKARMOR_API_KEY is shorter than 32 characters. Failed-login throttling does not stop a guessing attack on a weak key; generate one with `openssl rand -hex 32`.');
+  }
+
+  if (process.env.RAILWAY_ENVIRONMENT && !process.env.RAILWAY_VOLUME_MOUNT_PATH && !process.env.HOOKARMOR_ALLOW_EPHEMERAL && !createServer._warnedRailwayVolume) {
+    createServer._warnedRailwayVolume = true;
+    console.warn('\n⚠️  [Railway Warning] Running on Railway without a persistent volume attached!');
+    console.warn('   SQLite data in /app/data will be lost whenever the container redeploys or restarts.');
+    console.warn('   To fix: In Railway dashboard, go to Settings -> Volumes -> Add Volume (mount at /app/data).\n');
   }
 
   const app = express();
@@ -316,7 +339,13 @@ function createServer(options = {}) {
     }
   });
 
+  // ws emits 'error' for protocol violations (a frame larger than maxPayload, bad UTF-8, an unmasked
+  // frame). Without a listener Node throws it as an uncaught exception, so any unauthenticated client
+  // could stop the whole gateway with a single oversized frame.
+  wss.on('error', (err) => console.error('[WebSocket] server error:', err.message));
+
   wss.on('connection', (socket) => {
+    socket.on('error', () => { try { socket.terminate(); } catch (_) {} });
     // If an API key is configured, WebSocket ALWAYS requires authentication (even in demo mode)
     socket.isAuthed = !apiKey;
     let authTimer = null;
@@ -367,6 +396,57 @@ function createServer(options = {}) {
     limit: clampInt(process.env.HOOKARMOR_INGRESS_RATE_LIMIT, 600, 1, 50000),
     windowMs: 60000
   });
+  // Endpoints with a signing secret are not throttled by request count: a provider burst (flash sale,
+  // bulk invoice run) arrives from a handful of IPs and every 429 is a failed delivery on the provider's
+  // side. Only requests that FAIL verification count, so an unauthenticated sender is still cut off.
+  const badSignatureLimiter = createRateLimiter({
+    limit: clampInt(process.env.HOOKARMOR_BAD_SIGNATURE_RATE_LIMIT, 60, 1, 50000),
+    windowMs: 60000
+  });
+
+  // Requests rejected at the edge never reach storage. Without this bookkeeping a rotated or mistyped
+  // signing secret makes HookArmor answer 400 to every genuine webhook with nothing in the dashboard,
+  // metrics or alerts, until the provider disables the subscription.
+  const INGRESS_REJECT_WINDOW_MS = 15 * 60 * 1000;
+  const INGRESS_REJECT_ALERT_AT = 5;
+  const ingressRejects = new Map();
+  function noteIngressReject(endpoint, kind, reason) {
+    let r = ingressRejects.get(endpoint.id);
+    if (!r) {
+      r = { total: 0, signature: 0, scheme_mismatch: 0, rate_limited: 0, capacity: 0, lastAt: null, lastReason: null, windowStart: 0, windowCount: 0, lastLogAt: 0 };
+      ingressRejects.set(endpoint.id, r);
+    }
+    const now = Date.now();
+    r.total++;
+    r[kind] = (r[kind] || 0) + 1;
+    r.lastAt = new Date(now).toISOString();
+    r.lastReason = String(reason || kind).slice(0, 200);
+    if (now - r.windowStart > INGRESS_REJECT_WINDOW_MS) {
+      r.windowStart = now;
+      r.windowCount = 0;
+    }
+    r.windowCount++;
+    if (now - r.lastLogAt > 60000) {
+      r.lastLogAt = now;
+      console.warn(`[Ingress] Rejected webhook for endpoint '${endpoint.id}' (${kind}: ${r.lastReason}). ${r.total} rejected since start. The provider sees these as failed deliveries.`);
+    }
+    // One alert per endpoint per window, and only once it is clearly not a single stray request
+    if (r.windowCount === INGRESS_REJECT_ALERT_AT) {
+      const alertUrl = endpoint.alert_webhook_url || process.env.HOOKARMOR_ALERT_WEBHOOK_URL || null;
+      Promise.resolve(Alerter.sendIngressRejectionAlert(alertUrl, { endpoint, kind, reason: r.lastReason, count: r.windowCount }, { strictSSRF }))
+        .catch((err) => console.error('[Ingress] Rejection alert failed:', err.message));
+    }
+  }
+  function ingressRejectSummary(endpointId) {
+    const r = ingressRejects.get(endpointId);
+    if (!r) return { total: 0 };
+    return { total: r.total, signature: r.signature, scheme_mismatch: r.scheme_mismatch, rate_limited: r.rate_limited, capacity: r.capacity, lastAt: r.lastAt, lastReason: r.lastReason };
+  }
+  const describeEndpoint = (ep) => {
+    const out = publicEndpoint(ep);
+    if (out) out.ingressRejections = ingressRejectSummary(ep.id);
+    return out;
+  };
   const parseBytes = (val, defaultBytes = 10 * 1024 * 1024) => {
     if (typeof val === 'number') return val;
     if (typeof val !== 'string') return defaultBytes;
@@ -390,19 +470,26 @@ function createServer(options = {}) {
         return res.status(413).json({ error: 'Request body exceeds maximum allowed size' });
       }
     }
-    if (!ingressLimiter(req.ip)) {
+    const tooMany = () => {
       res.setHeader('Connection', 'close');
       return res.status(429).json({ error: 'Too many ingress requests from this IP; rate limit exceeded' });
-    }
+    };
     const endpointId = req.params.endpointId;
-    if (!ENDPOINT_ID_PATTERN.test(endpointId)) {
+    const endpoint = ENDPOINT_ID_PATTERN.test(endpointId) ? storage.getEndpoint(endpointId) : null;
+    if (!endpoint) {
+      // Unknown ids still count per IP, so the gateway cannot be used to enumerate endpoint names
+      if (!ingressLimiter(req.ip)) return tooMany();
       res.setHeader('Connection', 'close');
       return res.status(404).json({ error: 'HookArmor endpoint not found' });
     }
-    const endpoint = storage.getEndpoint(endpointId);
-    if (!endpoint) {
-      res.setHeader('Connection', 'close');
-      return res.status(404).json({ error: 'HookArmor endpoint not found' });
+    if (endpoint.secret) {
+      if (isRateLimited(badSignatureLimiter, req.ip)) {
+        noteIngressReject(endpoint, 'rate_limited', 'Too many requests with invalid signatures from this address');
+        return tooMany();
+      }
+    } else if (!ingressLimiter(req.ip)) {
+      noteIngressReject(endpoint, 'rate_limited', 'Per-IP ingress rate limit exceeded');
+      return tooMany();
     }
     req.endpoint = endpoint;
     next();
@@ -415,6 +502,7 @@ function createServer(options = {}) {
 
     // Storage capacity backpressure protection per endpoint
     if (storage.countPending && storage.countPending(endpointId) >= maxPendingEvents) {
+      noteIngressReject(endpoint, 'capacity', `More than ${maxPendingEvents} undelivered events are queued`);
       return res.status(503).json({ error: 'Ingress queue capacity reached. System is under high load; retry shortly.' });
     }
 
@@ -475,6 +563,8 @@ function createServer(options = {}) {
     // so rows saved by older dashboards/CLIs ('generic', 'svix') do not reject valid traffic.
     const pinnedProvider = Dispatcher.normalizeProvider(endpoint.provider);
     if (pinnedProvider !== null && provider !== pinnedProvider) {
+      if (endpoint.secret) badSignatureLimiter(req.ip);
+      noteIngressReject(endpoint, 'scheme_mismatch', `Configured for ${endpoint.provider}, received ${provider}`);
       return res.status(400).json({
         error: `Signature scheme mismatch: endpoint is configured for ${endpoint.provider}, but received ${provider}`,
         provider,
@@ -487,6 +577,8 @@ function createServer(options = {}) {
     if (endpoint.secret) {
       const verification = Dispatcher.verifyIngressSignature(provider, rawBodyBuffer, headers, endpoint.secret);
       if (!verification.valid) {
+        badSignatureLimiter(req.ip);
+        noteIngressReject(endpoint, 'signature', verification.reason);
         return res.status(400).json({
           error: 'Webhook signature verification failed',
           provider,
@@ -534,14 +626,19 @@ function createServer(options = {}) {
 
       const bodyHash = storage.hashBody(rawBodyBuffer, provider, eventType);
       if (verified && bodyDedupeHours > 0 && BODY_ONLY_SIGNATURE_PROVIDERS.has(provider)) {
-        const sameBody = storage.findRecentEventByBodyHash(endpoint.id, bodyHash, bodyDedupeHours);
-        if (sameBody) {
-          return res.status(200).json({
-            received: true,
-            hookarmor_id: sameBody.id,
-            status: 'deduplicated',
-            message: `Identical signed payload already received within ${bodyDedupeHours}h (current status: ${sameBody.status}). Suppressed duplicate delivery.`
-          });
+        // Legitimate GitHub events (e.g. repository_dispatch) frequently repeat identical bodies
+        // under distinct X-GitHub-Delivery IDs. Do not suppress distinct deliveries for GitHub.
+        const shouldDedupeBody = provider !== 'github' || !headers['x-github-delivery'];
+        if (shouldDedupeBody) {
+          const sameBody = storage.findRecentEventByBodyHash(endpoint.id, bodyHash, bodyDedupeHours);
+          if (sameBody) {
+            return res.status(200).json({
+              received: true,
+              hookarmor_id: sameBody.id,
+              status: 'deduplicated',
+              message: `Identical signed payload already received within ${bodyDedupeHours}h (current status: ${sameBody.status}). Suppressed duplicate delivery.`
+            });
+          }
         }
       }
 
@@ -662,14 +759,14 @@ function createServer(options = {}) {
 
   // List Endpoints (secrets are never returned)
   app.get('/api/endpoints', (req, res) => {
-    res.json(storage.listEndpoints().map(publicEndpoint));
+    res.json(storage.listEndpoints().map(describeEndpoint));
   });
 
   // Get single endpoint
   app.get('/api/endpoints/:id', (req, res) => {
     const ep = storage.getEndpoint(req.params.id);
     if (!ep) return res.status(404).json({ error: 'Endpoint not found' });
-    res.json(publicEndpoint(ep));
+    res.json(describeEndpoint(ep));
   });
 
   // Create or Update Endpoint
@@ -726,7 +823,7 @@ function createServer(options = {}) {
       concurrencyLimit: clampInt(rawConcurrency, existing ? existing.concurrency_limit : 5, 1, 100),
       customHeaders: headerCheck.headers
     });
-    res.json(publicEndpoint(endpoint));
+    res.json(describeEndpoint(endpoint));
   });
 
   // Delete an endpoint (F-09: protected against accidental DLQ data loss unless force=true)
@@ -749,24 +846,40 @@ function createServer(options = {}) {
     }
 
     const deleted = storage.deleteEndpoint(req.params.id);
+    ingressRejects.delete(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Endpoint not found' });
     res.json({ success: true, message: 'Endpoint deleted' });
   });
 
   // List Events
   app.get('/api/events', (req, res) => {
-    const { endpointId, status, limit, offset } = req.query;
+    const { endpointId, status, limit, offset, full } = req.query;
     const events = storage.listEvents({
       endpointId: typeof endpointId === 'string' ? endpointId : null,
       status: typeof status === 'string' ? status : null,
       limit: clampInt(limit, 50, 1, 5000),
       offset: clampInt(offset, 0, 0, Number.MAX_SAFE_INTEGER)
     });
-    res.json(events.map(e => ({
-      ...e,
-      headers: redactInboundHeaders(e.headers),
-      raw_body: Buffer.isBuffer(e.raw_body) ? e.raw_body.toString('utf8') : String(e.raw_body || '')
-    })));
+    const allowFull = full === 'true' || full === '1';
+    res.json(events.map(e => {
+      const rawBuf = Buffer.isBuffer(e.raw_body) ? e.raw_body : Buffer.from(String(e.raw_body || ''), 'utf8');
+      const bodyLen = rawBuf.length;
+      let bodyStr;
+      let truncated = false;
+      if (!allowFull && bodyLen > 65536) {
+        bodyStr = rawBuf.slice(0, 65536).toString('utf8');
+        truncated = true;
+      } else {
+        bodyStr = rawBuf.toString('utf8');
+      }
+      return {
+        ...e,
+        headers: redactInboundHeaders(e.headers),
+        raw_body: bodyStr,
+        body_size: bodyLen,
+        ...(truncated ? { body_truncated: true } : {})
+      };
+    }));
   });
 
   // Get single event with attempts
@@ -852,7 +965,9 @@ function createServer(options = {}) {
         }
       } else {
         const host = hostnameOf(req.headers['host']);
-        if (!LOCAL_HOSTNAMES.has(host) && !allowNoAuth) {
+        const remote = req.socket && req.socket.remoteAddress;
+        const isLoopbackRemote = !remote || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+        if ((!isLoopbackRemote || !LOCAL_HOSTNAMES.has(host)) && !allowNoAuth) {
           return res.status(403).json({ error: 'Forbidden: loopback access only' });
         }
       }
@@ -926,8 +1041,16 @@ function createServer(options = {}) {
         '',
         '# HELP hookarmor_delivery_latency_ms_avg Average delivery latency in milliseconds',
         '# TYPE hookarmor_delivery_latency_ms_avg gauge',
-        `hookarmor_delivery_latency_ms_avg ${stats.avgLatencyMs || 0}`
+        `hookarmor_delivery_latency_ms_avg ${stats.avgLatencyMs || 0}`,
+        '',
+        '# HELP hookarmor_ingress_rejected_total Webhooks refused at ingress since process start (never stored; the provider sees a failed delivery)',
+        '# TYPE hookarmor_ingress_rejected_total counter'
       ];
+      for (const [id, r] of ingressRejects) {
+        for (const kind of ['signature', 'scheme_mismatch', 'rate_limited', 'capacity']) {
+          lines.push(`hookarmor_ingress_rejected_total{endpoint="${id}",reason="${kind}"} ${r[kind] || 0}`);
+        }
+      }
 
       res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
       res.end(lines.join('\n') + '\n');
