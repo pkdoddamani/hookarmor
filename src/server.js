@@ -227,6 +227,9 @@ function createServer(options = {}) {
   const waitlistEnabled = options.enableWaitlist !== undefined
     ? options.enableWaitlist
     : (envFlag('HOOKARMOR_ENABLE_WAITLIST') !== undefined ? envFlag('HOOKARMOR_ENABLE_WAITLIST') : serveLanding);
+  const requireSecrets = options.requireSecrets !== undefined
+    ? options.requireSecrets
+    : (envFlag('HOOKARMOR_REQUIRE_SECRETS') === true);
 
   if (isProduction && !apiKey && !allowNoAuth) {
     throw new Error(
@@ -245,6 +248,11 @@ function createServer(options = {}) {
     console.warn('\n⚠️  [Railway Warning] Running on Railway without a persistent volume attached!');
     console.warn('   SQLite data in /app/data will be lost whenever the container redeploys or restarts.');
     console.warn('   To fix: In Railway dashboard, go to Settings -> Volumes -> Add Volume (mount at /app/data).\n');
+  }
+
+  if (requireSecrets && !createServer._loggedRequireSecrets && process.env.NODE_ENV !== 'test') {
+    createServer._loggedRequireSecrets = true;
+    console.log('[Security] HOOKARMOR_REQUIRE_SECRETS is active: unauthenticated endpoints are strictly forbidden.');
   }
 
   const app = express();
@@ -565,6 +573,11 @@ function createServer(options = {}) {
       return res.status(503).json({ error: 'Ingress queue capacity reached. System is under high load; retry shortly.' });
     }
 
+    if (requireSecrets && !endpoint.secret) {
+      noteIngressReject(endpoint, 'signature', 'Endpoint has no signing secret and HOOKARMOR_REQUIRE_SECRETS is active');
+      return res.status(400).json({ error: 'Webhook rejected: endpoint has no signing secret and HOOKARMOR_REQUIRE_SECRETS is enforced' });
+    }
+
     const rawBodyBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
     let rawBody = '';
     try {
@@ -844,6 +857,10 @@ function createServer(options = {}) {
     }
     if (secret !== undefined && (typeof secret !== 'string' || secret.length > 500)) {
       return res.status(400).json({ error: 'secret must be a string of at most 500 characters' });
+    }
+    const effectiveSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
+    if (requireSecrets && (!effectiveSecret || !effectiveSecret.trim())) {
+      return res.status(400).json({ error: 'HOOKARMOR_REQUIRE_SECRETS is enabled: all endpoints must have a signing secret configured' });
     }
     if (provider !== undefined && provider !== null && (typeof provider !== 'string' || provider.length > 50)) {
       return res.status(400).json({ error: 'provider must be a string of at most 50 characters' });

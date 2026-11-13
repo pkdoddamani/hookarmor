@@ -10,6 +10,8 @@ services:
       - "4000:4000"
     volumes:
       - hookarmor_data:/app/data
+    security_opt:
+      - no-new-privileges:true
     environment:
       - PORT=4000
       - NODE_ENV=production
@@ -19,6 +21,8 @@ services:
       # Generate with: openssl rand -hex 32
       # - HOOKARMOR_ENCRYPTION_KEY=${HOOKARMOR_ENCRYPTION_KEY}
       # - HOOKARMOR_ENCRYPT_BODIES=true
+      # Strict compliance mode: enforces that all endpoints must have a signing secret
+      # - HOOKARMOR_REQUIRE_SECRETS=true
       # Uncomment if your app is on this host or Docker network (e.g. http://app:3000):
       # production mode blocks private-network targets by default
       # - HOOKARMOR_STRICT_SSRF=false

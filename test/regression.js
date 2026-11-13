@@ -2358,6 +2358,51 @@ test('R18: Storage.backup creates a consistent online hot-backup of the SQLite d
   }
 });
 
+test('R19: HOOKARMOR_REQUIRE_SECRETS enforces mandatory signing secrets on creation and ingress', async () => {
+  const ha = await startHA({ requireSecrets: true });
+  try {
+    // 1. Refuses to create endpoint without a secret
+    const resNoSecret = await fetch(`${ha.base}/api/endpoints`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'ep_r19_nosecret', name: 'No Secret', targetUrl: 'https://example.com/wh' })
+    });
+    assert.strictEqual(resNoSecret.status, 400, 'Creation without secret must be rejected');
+    const dataNoSecret = await resNoSecret.json();
+    assert.ok(dataNoSecret.error.includes('HOOKARMOR_REQUIRE_SECRETS'), 'Must explain HOOKARMOR_REQUIRE_SECRETS requirement');
+
+    // 2. Allows creation with valid secret
+    const resSecret = await fetch(`${ha.base}/api/endpoints`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ id: 'ep_r19_ok', name: 'With Secret', targetUrl: 'https://example.com/wh', secret: 'whsec_test_123' })
+    });
+    assert.strictEqual(resSecret.status, 200);
+
+    // 3. Bypass direct in SQLite to simulate a legacy unauthenticated endpoint: ingress must be rejected
+    ha.storage.createEndpoint({ id: 'ep_r19_legacy', name: 'Legacy Insecure', targetUrl: 'https://example.com/wh', secret: '' });
+    const ingressRes = await fetch(`${ha.base}/in/ep_r19_legacy`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: '{"test":1}'
+    });
+    assert.strictEqual(ingressRes.status, 400, 'Ingress without secret must be rejected when requireSecrets is active');
+    const ingressData = await ingressRes.json();
+    assert.ok(ingressData.error.includes('HOOKARMOR_REQUIRE_SECRETS'));
+  } finally {
+    await ha.close();
+  }
+});
+
+test('R20: SECURITY.md policy document integrity and disclosure contacts', async () => {
+  const secPath = path.join(__dirname, '../SECURITY.md');
+  assert.ok(fs.existsSync(secPath), 'SECURITY.md must exist in repository root');
+  const content = fs.readFileSync(secPath, 'utf8');
+  assert.ok(content.includes('security@hookarmour.dev'), 'Must include security reporting email');
+  assert.ok(content.includes('1.4.x'), 'Must list current 1.4.x branch as supported');
+  assert.ok(content.includes('Response SLA'), 'Must define vulnerability response SLA');
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {
