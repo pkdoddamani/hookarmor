@@ -65,9 +65,8 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 
 Deploy your own private, persistent HookArmor instance to the cloud with one click:
 
-> **Before you deploy:** production instances refuse to start without `HOOKARMOR_API_KEY` (Render generates one automatically). Events live in SQLite under `/app/data`, so that path must be on persistent storage: Render's blueprint attaches a disk (paid `starter` plan, since free instances have no persistent disk), and on **Railway you must add a Volume mounted at `/app/data`** or every redeploy wipes the queue.
+> **Before you deploy:** production instances refuse to start without `HOOKARMOR_API_KEY` (Render generates one automatically). Events live in SQLite under `/app/data`. On Render, deploy directly as a Web Service using the pre-configured `render.yaml` or Docker runtime.
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template?template=https://github.com/pkdoddamani/hookarmor)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/pkdoddamani/hookarmor)
 
 ---
