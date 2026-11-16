@@ -1607,27 +1607,31 @@ test('Sentinel: assessDisablementRisk calculates provider cutoff thresholds accu
   assert.strictEqual(assessDisablementRisk(null).level, 'healthy');
   assert.strictEqual(assessDisablementRisk({ consecutive_failures: 0 }).level, 'healthy');
 
-  // Shopify policy (19 cutoff)
+  // Shopify thresholds. No "cutoff"/"remaining": Shopify only sees HookArmor's 200 responses,
+  // so a failing destination is not a countdown to subscription removal.
   assert.strictEqual(assessDisablementRisk({ provider: 'shopify', consecutive_failures: 4 }).level, 'healthy');
   const shopifyWarn = assessDisablementRisk({ provider: 'shopify', consecutive_failures: 5 });
   assert.strictEqual(shopifyWarn.level, 'warning');
-  assert.strictEqual(shopifyWarn.remaining, 14);
+  assert.strictEqual(shopifyWarn.providerSubscriptionAtRisk, false);
+  assert.strictEqual(shopifyWarn.cutoff, undefined);
+  assert.strictEqual(shopifyWarn.remaining, undefined);
+  assert.ok(!/cutoff/i.test(shopifyWarn.message), 'must not claim a provider cutoff countdown');
 
   const shopifyDanger = assessDisablementRisk({ provider: 'shopify', consecutive_failures: 10 });
   assert.strictEqual(shopifyDanger.level, 'danger');
-  assert.strictEqual(shopifyDanger.remaining, 9);
+  assert.strictEqual(shopifyDanger.remaining, undefined);
 
   const shopifyCrit = assessDisablementRisk({ provider: 'shopify', consecutive_failures: 15 });
   assert.strictEqual(shopifyCrit.level, 'critical');
-  assert.strictEqual(shopifyCrit.remaining, 4);
+  assert.strictEqual(shopifyCrit.remaining, undefined);
 
   // Razorpay policy (24h cutoff)
   const now = new Date();
   const past20h = new Date(now.getTime() - 20 * 3600 * 1000).toISOString();
   const rzCrit = assessDisablementRisk({ provider: 'razorpay', consecutive_failures: 8, streak_started_at: past20h });
   assert.strictEqual(rzCrit.level, 'critical');
-  assert.strictEqual(rzCrit.cutoffHours, 24);
-  assert.ok(rzCrit.hoursRemaining <= 4);
+  assert.strictEqual(rzCrit.streakHours, 20);
+  assert.strictEqual(rzCrit.cutoffHours, undefined);
 
   // Generic policy
   assert.strictEqual(assessDisablementRisk({ provider: 'generic', consecutive_failures: 5 }).level, 'warning');
@@ -1702,7 +1706,7 @@ test('Sentinel: dispatcher fires escalated disablement alerts and recovery alert
     await ha.dispatcher.dispatch(ev5, ha.storage.getEndpoint('ep_sentinel_alert'));
 
     await waitFor(() => alertTarget.requests.length >= 2, 2000); // 1 normal failure alert + 1 sentinel alert
-    const sentinelAlert1 = alertTarget.requests.find(r => r.body.includes('HookArmor Sentinel') || r.body.includes('Shopify Webhook Delivery Streak Failing'));
+    const sentinelAlert1 = alertTarget.requests.find(r => r.body.includes('HookArmor Sentinel') || r.body.includes('WARNING: Webhook Delivery Errors'));
     assert.ok(sentinelAlert1, 'Must dispatch Sentinel warning alert');
     const epAfter5 = ha.storage.getEndpoint('ep_sentinel_alert');
     assert.strictEqual(epAfter5.last_alerted_level, 1);
@@ -1712,7 +1716,7 @@ test('Sentinel: dispatcher fires escalated disablement alerts and recovery alert
     await ha.dispatcher.dispatch(ev6, ha.storage.getEndpoint('ep_sentinel_alert'));
     await sleep(100);
     // Sentinel alert should NOT have fired again
-    const sentinelAlertsAfter6 = alertTarget.requests.filter(r => r.body.includes('Shopify Webhook Delivery Streak Failing'));
+    const sentinelAlertsAfter6 = alertTarget.requests.filter(r => r.body.includes('WARNING: Webhook Delivery Errors'));
     assert.strictEqual(sentinelAlertsAfter6.length, 1, 'Must not duplicate alert at same risk level');
 
     // Switch hook target to 200 OK -> recovery alert!
@@ -1757,7 +1761,7 @@ test('Sentinel: GET /api/endpoints and /api/endpoints/:id expose disablementRisk
     assert.ok(epInList.disablementRisk, 'Endpoint in list must contain disablementRisk');
     assert.strictEqual(epInList.disablementRisk.level, 'warning');
     assert.strictEqual(epInList.disablementRisk.consecutiveFailures, 5);
-    assert.strictEqual(epInList.disablementRisk.cutoff, 19);
+    assert.strictEqual(epInList.disablementRisk.providerSubscriptionAtRisk, false);
 
     const singleRes = await fetch(`${ha.base}/api/endpoints/ep_api_sentinel`);
     assert.strictEqual(singleRes.status, 200);
@@ -2544,6 +2548,75 @@ test('A7: CLI backup refuses a path with no database instead of saving an empty 
   const copy = new Storage(path.join(dir, 'copy.db'));
   assert.ok(copy.getEvent('evt_a7'));
   copy.close();
+});
+
+// ---- Third audit pass (v1.4.5 review) ----
+
+test('C1: a previous process on this host that no longer exists is recovered at startup, not a minute later', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-c1-'));
+  const dbPath = path.join(dir, 'h.db');
+  const { spawnSync } = require('child_process');
+  const gone = spawnSync(process.execPath, ['-e', '']).pid; // a pid that has already exited
+  const seed = new Storage(dbPath);
+  seed.createEndpoint({ id: 'ep_c1', name: 'c1', targetUrl: 'https://example.com/a' });
+  seed.registerInstance({ id: 'inst_killed', hostname: os.hostname(), pid: gone });   // heartbeat = now
+  seed.registerInstance({ id: 'inst_elsewhere', hostname: 'some-other-host', pid: gone });
+  seed.saveEvent({ id: 'evt_c1_local', endpointId: 'ep_c1', provider: 'generic', headers: {}, rawBody: '{}', status: 'replaying', claimedBy: 'inst_killed' });
+  seed.saveEvent({ id: 'evt_c1_remote', endpointId: 'ep_c1', provider: 'generic', headers: {}, rawBody: '{}', status: 'replaying', claimedBy: 'inst_elsewhere' });
+  seed.close();
+  const ha = await startHA({ dbPath });
+  try {
+    assert.strictEqual(ha.storage.getEvent('evt_c1_local').status, 'pending', 'event of the dead local process must be re-queued on start');
+    assert.strictEqual(ha.storage.getEvent('evt_c1_remote').status, 'replaying', 'a fresh heartbeat from another host must still be respected');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('C2: endpoints left on the old hard-coded 5 attempts are upgraded once; chosen values are kept', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-c2-'));
+  const dbPath = path.join(dir, 'h.db');
+  const old = new Storage(dbPath);
+  old.createEndpoint({ id: 'ep_c2_old', name: 'old', targetUrl: 'https://example.com/a', maxRetries: 5 });
+  old.createEndpoint({ id: 'ep_c2_three', name: 'three', targetUrl: 'https://example.com/a', maxRetries: 3 });
+  old.db.pragma('user_version = 0'); // as written by 1.4.5 and earlier
+  old.close();
+  const upgraded = new Storage(dbPath);
+  assert.strictEqual(upgraded.getEndpoint('ep_c2_old').max_retries, Storage.DEFAULT_MAX_RETRIES);
+  assert.strictEqual(upgraded.getEndpoint('ep_c2_three').max_retries, 3);
+  upgraded.createEndpoint({ id: 'ep_c2_five', name: 'five', targetUrl: 'https://example.com/a', maxRetries: 5 });
+  upgraded.close();
+  const again = new Storage(dbPath);
+  assert.strictEqual(again.getEndpoint('ep_c2_five').max_retries, 5, 'a 5 chosen after the upgrade must be kept');
+  again.close();
+});
+
+test('C3: failed-event retention is off by default and only removes events with no retry left', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_c3', name: 'c3', targetUrl: 'https://example.com/a' });
+    const save = (id, status) => ha.storage.saveEvent({ id, endpointId: 'ep_c3', provider: 'generic', headers: {}, rawBody: '{}', status });
+    save('evt_c3_dead', 'failed'); save('evt_c3_retrying', 'failed'); save('evt_c3_recent', 'failed'); save('evt_c3_pending', 'pending');
+    ha.storage.db.prepare("UPDATE events SET updated_at = datetime('now','-100 days'), created_at = datetime('now','-100 days') WHERE id IN ('evt_c3_dead','evt_c3_retrying','evt_c3_pending')").run();
+    ha.storage.db.prepare("UPDATE events SET next_retry_at = datetime('now','+1 hour') WHERE id = 'evt_c3_retrying'").run();
+    assert.strictEqual(ha.worker.failedRetentionDays, 0, 'must be opt-in');
+    assert.strictEqual(ha.storage.pruneFailedEvents(0), 0);
+    assert.strictEqual(ha.storage.pruneFailedEvents(90), 1);
+    assert.ok(!ha.storage.getEvent('evt_c3_dead'), 'exhausted event past retention must be removed');
+    for (const id of ['evt_c3_retrying', 'evt_c3_recent', 'evt_c3_pending']) assert.ok(ha.storage.getEvent(id), `${id} must be kept`);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('C4: API responses are not cacheable', async () => {
+  const ha = await startHA();
+  try {
+    const res = await fetch(`${ha.base}/api/stats`);
+    assert.strictEqual(res.headers.get('cache-control'), 'no-store');
+  } finally {
+    await ha.close();
+  }
 });
 
 (async () => {
