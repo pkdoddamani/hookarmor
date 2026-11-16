@@ -131,6 +131,14 @@ class Storage {
       throw new Error('HOOKARMOR_ENCRYPT_BODIES=true requires HOOKARMOR_ENCRYPTION_KEY');
     }
 
+    const rawKey = options.encryptionKey !== undefined ? options.encryptionKey : envKey;
+    if (rawKey && String(rawKey).length < 32 && !Storage._warnedWeakKey && process.env.NODE_ENV !== 'test') {
+      // The key is stretched with a single SHA-256, which is fine for a random key and no protection
+      // at all for a short passphrase
+      console.warn('[Security Warning] HOOKARMOR_ENCRYPTION_KEY is shorter than 32 characters and can be guessed offline from a copy of the database. Generate one with `openssl rand -hex 32`.');
+      Storage._warnedWeakKey = true;
+    }
+
     if (!this.encryptionKey && !Storage._warnedNoKey && process.env.NODE_ENV !== 'test') {
       console.warn('[Security Warning] HOOKARMOR_ENCRYPTION_KEY is not set. Endpoint secrets are stored in plaintext. Set a 32+ character key to enable AES-256-GCM at-rest encryption.');
       Storage._warnedNoKey = true;
@@ -255,6 +263,17 @@ class Storage {
     // countPending() runs on every incoming webhook. Without this index SQLite walked every stored row
     // of the endpoint (measured 57 ms per webhook at 100k stored events, 263 ms at 500k).
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_events_ep_status ON events(endpoint_id, status)');
+
+    // One-time upgrade. Until 1.4.5 the dashboard and CLI always saved max_retries = 5, which stops
+    // retrying after about 43 minutes. Endpoints still on that old default move to the current one;
+    // any other value was chosen by the operator and is left alone.
+    if (this.db.pragma('user_version', { simple: true }) < 1) {
+      const upgraded = this.db.prepare('UPDATE endpoints SET max_retries = ? WHERE max_retries = 5').run(Storage.DEFAULT_MAX_RETRIES).changes;
+      this.db.pragma('user_version = 1');
+      if (upgraded > 0 && process.env.NODE_ENV !== 'test') {
+        console.warn(`[HookArmor] Raised max_retries from 5 to ${Storage.DEFAULT_MAX_RETRIES} on ${upgraded} endpoint(s): 5 attempts gave up after about 43 minutes. Set a different value per endpoint with \`hookarmor endpoints add --max-retries <n>\`.`);
+      }
+    }
 
     const epColumns = this.db.prepare('PRAGMA table_info(endpoints)').all().map((c) => c.name);
     if (!epColumns.includes('provider')) {
@@ -805,6 +824,31 @@ class Storage {
     return this.db.prepare('DELETE FROM instances WHERE id = ?').run(instanceId).changes;
   }
 
+  // After a hard kill the dead process's heartbeat still looks fresh for up to 45 seconds, so its
+  // in-flight events were not re-queued "on the next start" as documented. An instance registered from
+  // this same host whose process no longer exists is certainly dead: drop it now so the recovery pass
+  // that follows reclaims its events immediately. Instances on other hosts (a redeploy into a new
+  // container) cannot be probed and still age out through the heartbeat.
+  reapDeadLocalInstances(selfId, hostname, { isLive = () => false } = {}) {
+    if (!hostname) return 0;
+    const rows = this.db.prepare('SELECT id, pid FROM instances WHERE hostname = ? AND id != ?').all(hostname, selfId || '');
+    let reaped = 0;
+    for (const row of rows) {
+      if (isLive(row.id)) continue; // another server object inside this very process
+      let alive = false;
+      if (row.pid && row.pid !== process.pid) {
+        try {
+          process.kill(row.pid, 0);
+          alive = true;
+        } catch (err) {
+          alive = err.code === 'EPERM';
+        }
+      }
+      if (!alive) reaped += this.deregisterInstance(row.id);
+    }
+    return reaped;
+  }
+
   // Fail-fast assertion: verify all configured endpoint secrets and custom headers can be decrypted
   assertSecretsReadable(allowUnreadable = false) {
     const endpoints = this.db.prepare('SELECT id, secret, custom_headers FROM endpoints').all();
@@ -890,6 +934,18 @@ class Storage {
         )
       `).run(cutoff);
       return this.db.prepare("DELETE FROM events WHERE status = 'delivered' AND created_at < datetime('now', ?)").run(cutoff).changes;
+    })();
+  }
+
+  // Optional: delete events that ran out of retries and have waited `days` in the DLQ. Off unless
+  // configured, because these are events the destination never accepted.
+  pruneFailedEvents(days) {
+    if (!days || days <= 0) return 0;
+    const cutoff = `-${Math.floor(days)} days`;
+    const where = "status = 'failed' AND next_retry_at IS NULL AND updated_at < datetime('now', ?)";
+    return this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM delivery_attempts WHERE event_id IN (SELECT id FROM events WHERE ${where})`).run(cutoff);
+      return this.db.prepare(`DELETE FROM events WHERE ${where}`).run(cutoff).changes;
     })();
   }
 
