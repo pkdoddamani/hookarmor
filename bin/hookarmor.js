@@ -103,6 +103,24 @@ function setupGracefulShutdown(server, dispatcher, storage, instanceId, worker) 
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // A bug that throws outside any handler would otherwise kill the process mid-delivery with claims
+  // still held. Log it, hand the claimed events back, and exit non-zero so the supervisor restarts us.
+  const fatal = (label) => (err) => {
+    console.error(chalk.red.bold(`\n✖ ${label}: ${(err && err.stack) || err}`));
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      if (worker) worker.stop();
+      if (storage && instanceId) {
+        storage.releaseClaimsOwnedBy(instanceId);
+        storage.deregisterInstance(instanceId);
+      }
+    } catch (_) {}
+    process.exit(1);
+  };
+  process.on('uncaughtException', fatal('Uncaught exception'));
+  process.on('unhandledRejection', fatal('Unhandled promise rejection'));
 }
 
 function apiHeaders(apiKey) {
