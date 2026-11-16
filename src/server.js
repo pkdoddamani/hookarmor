@@ -14,6 +14,8 @@ const { assessDisablementRisk } = require('./sentinel');
 const Alerter = require('./alerter');
 
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+// Instance ids of servers created inside this process (tests and embedders can run several)
+const LIVE_INSTANCE_IDS = new Set();
 const ENDPOINT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 // These providers sign the body only: the delivery id header (X-Shopify-Webhook-Id,
@@ -234,6 +236,10 @@ function createServer(options = {}) {
     ? process.env.HOOKARMOR_CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
     : []);
   const maxBody = options.maxBodySize || process.env.HOOKARMOR_MAX_BODY || '10mb';
+  // Events that exhausted their retries are kept forever unless this is set
+  const failedRetentionDays = options.failedRetentionDays !== undefined
+    ? options.failedRetentionDays
+    : clampInt(process.env.HOOKARMOR_FAILED_RETENTION_DAYS, 0, 0, 3650);
   const retentionDays = options.retentionDays !== undefined
     ? options.retentionDays
     : clampInt(process.env.HOOKARMOR_RETENTION_DAYS, 30, 0, 3650);
@@ -282,12 +288,19 @@ function createServer(options = {}) {
     console.log('[Security] HOOKARMOR_REQUIRE_SECRETS is active: unauthenticated endpoints are strictly forbidden.');
   }
 
+  if (isDemoMode && process.env.NODE_ENV !== 'test' && !createServer._warnedDemoMode) {
+    createServer._warnedDemoMode = true;
+    console.warn('[Security Warning] HOOKARMOR_DEMO_MODE is on: stored webhook payloads and endpoint settings are readable by anyone without an API key. Never send real webhooks to a demo-mode instance.');
+  }
+
   const app = express();
   const server = http.createServer(app);
 
   app.disable('x-powered-by');
 
   app.use((req, res, next) => {
+    // API and metrics responses carry webhook payloads and configuration: keep them out of caches
+    if (req.path.startsWith('/api/') || req.path === '/metrics') res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -316,11 +329,16 @@ function createServer(options = {}) {
     : clampInt(process.env.HOOKARMOR_BODY_DEDUPE_HOURS, 24, 0, 24 * 30);
 
   const instanceId = options.instanceId || `inst_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const hostname = require('os').hostname();
+  LIVE_INSTANCE_IDS.add(instanceId);
+  server.on('close', () => LIVE_INSTANCE_IDS.delete(instanceId));
   storage.registerInstance({
     id: instanceId,
-    hostname: require('os').hostname(),
+    hostname,
     pid: process.pid
   });
+  // Lets the recovery pass below reclaim events from a previous process on this host straight away
+  storage.reapDeadLocalInstances(instanceId, hostname, { isLive: (id) => LIVE_INSTANCE_IDS.has(id) });
 
   const recovered = storage.recoverInterruptedDeliveries();
   if (recovered > 0) {
@@ -363,6 +381,7 @@ function createServer(options = {}) {
   const worker = new RetryWorker(storage, dispatcher, {
     intervalMs: options.retryIntervalMs || 5000,
     retentionDays,
+    failedRetentionDays,
     instanceId,
     maxQueuedPerEndpoint: maxQueuedPerEndpoint,
     batchSize: options.retryBatchSize || clampInt(process.env.HOOKARMOR_RETRY_BATCH_SIZE, 200, 1, 5000)
