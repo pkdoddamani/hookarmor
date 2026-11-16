@@ -7,6 +7,7 @@ class RetryWorker extends EventEmitter {
     this.dispatcher = dispatcher;
     this.intervalMs = options.intervalMs || 5000;
     this.retentionDays = options.retentionDays || 0;
+    this.failedRetentionDays = options.failedRetentionDays || 0;
     this.pruneIntervalMs = options.pruneIntervalMs || 60 * 60 * 1000;
     this.lastPruneAt = 0;
     this.instanceId = options.instanceId || null;
@@ -41,10 +42,13 @@ class RetryWorker extends EventEmitter {
   }
 
   prune() {
-    if (!this.retentionDays || Date.now() - this.lastPruneAt < this.pruneIntervalMs) return;
+    if ((!this.retentionDays && !this.failedRetentionDays) || Date.now() - this.lastPruneAt < this.pruneIntervalMs) return;
     this.lastPruneAt = Date.now();
     const removed = this.storage.pruneEvents(this.retentionDays);
-    if (removed > 0) this.emit('pruned', { removed });
+    const removedFailed = this.failedRetentionDays && this.storage.pruneFailedEvents
+      ? this.storage.pruneFailedEvents(this.failedRetentionDays)
+      : 0;
+    if (removed > 0 || removedFailed > 0) this.emit('pruned', { removed, removedFailed });
   }
 
   async tick() {
