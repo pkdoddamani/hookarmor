@@ -607,7 +607,8 @@ test('B1: multi-instance lease claims prevent active peer delivery theft while r
     assert.strictEqual(evActive.status, 'replaying', 'Active peer delivery must remain in-flight');
 
     const evDead = ha.storage.getEvent('evt_dead_worker');
-    assert.strictEqual(evDead.status, 'failed', 'Dead worker delivery must be re-queued to failed');
+    // Never attempted, so it goes back to 'pending' (retried even when auto-retry is off)
+    assert.strictEqual(evDead.status, 'pending', 'Dead worker delivery must be re-queued');
   } finally {
     await ha.close();
   }
@@ -762,7 +763,7 @@ test('N1: active heartbeating instance claims within lease are not stolen, but e
     const reclaimedHung = ha.storage.recoverInterruptedDeliveries(60);
     assert.strictEqual(reclaimedHung, 1, 'Hung claim with expired lease must be reclaimed to prevent permanent stall');
     const evReclaimed = ha.storage.getEvent('evt_n1');
-    assert.strictEqual(evReclaimed.status, 'failed');
+    assert.strictEqual(evReclaimed.status, 'pending');
   } finally {
     await ha.close();
   }
@@ -1223,7 +1224,7 @@ test('Lease Expiry: recoverInterruptedDeliveries reclaims stalled replaying even
     assert.strictEqual(reclaimed, 1, 'Stalled delivery with expired lease must be reclaimed');
 
     const recovered = ha.storage.getEvent('evt_lease_stalled');
-    assert.strictEqual(recovered.status, 'failed');
+    assert.strictEqual(recovered.status, 'pending');
     assert.strictEqual(recovered.claimed_by, null);
     assert.ok(recovered.last_error.includes('lease expired'));
   } finally {
@@ -2043,7 +2044,7 @@ test('R5: worker tick renews leases on events still held in memory and reclaims 
     await ha.worker.tick();
     ha.dispatcher.heldEvents.delete('evt_r5_held');
     assert.strictEqual(ha.storage.getEvent('evt_r5_held').status, 'replaying', 'held event must keep its claim');
-    assert.strictEqual(ha.storage.getEvent('evt_r5_lost').status, 'failed', 'lost event must be reclaimed once its lease expires');
+    assert.strictEqual(ha.storage.getEvent('evt_r5_lost').status, 'pending', 'lost event must be reclaimed once its lease expires');
   } finally {
     await ha.close();
   }
@@ -2401,6 +2402,148 @@ test('R20: SECURITY.md policy document integrity and disclosure contacts', async
   assert.ok(content.includes('security@hookarmour.dev'), 'Must include security reporting email');
   assert.ok(content.includes('1.4.x'), 'Must list current 1.4.x branch as supported');
   assert.ok(content.includes('Response SLA'), 'Must define vulnerability response SLA');
+});
+
+// ---- Second audit pass (v1.4.4 review) ----
+
+test('A1: new endpoints get a retry budget that outlasts Stripe\'s 3-day window', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_a1', name: 'a1', targetUrl: 'https://example.com/a' });
+    const r = await fetch(`${ha.base}/api/endpoints`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'ep_a1_api', name: 'a1', targetUrl: 'https://example.com/a' }) });
+    assert.strictEqual(r.status, 200);
+    for (const id of ['ep_a1', 'ep_a1_api']) {
+      const ep = ha.storage.getEndpoint(id);
+      let windowSeconds = 0;
+      // Same condition the dispatcher uses: a retry is scheduled while (attempts + 1) < max_retries
+      for (let attempts = 0; (attempts + 1) < ep.max_retries; attempts++) {
+        windowSeconds += (new Date(ha.dispatcher.calculateNextRetry(attempts).replace(' ', 'T') + 'Z').getTime() - Date.now()) / 1000;
+      }
+      assert.ok(windowSeconds >= 72 * 3600, `${id}: automatic retries must span at least 72h, got ${(windowSeconds / 3600).toFixed(1)}h with max_retries=${ep.max_retries}`);
+    }
+  } finally {
+    await ha.close();
+  }
+});
+
+test('A2: writing a masked URL back does not overwrite the stored credential', async () => {
+  const ha = await startHA({ strictSSRF: false });
+  const post = (body) => fetch(`${ha.base}/api/endpoints`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    const real = 'https://hookuser:S3cretPass@example.com/hook';
+    const realAlert = 'https://alerts:Al3rtPass@example.com/alert';
+    assert.strictEqual((await post({ id: 'ep_a2', name: 'a2', targetUrl: real, alertWebhookUrl: realAlert })).status, 200);
+    const shown = await (await fetch(`${ha.base}/api/endpoints/ep_a2`)).json();
+    assert.ok(!shown.target_url.includes('S3cretPass') && !shown.alert_webhook_url.includes('Al3rtPass'), 'credentials must be masked in the API');
+    assert.strictEqual((await post({ id: 'ep_a2', targetUrl: shown.target_url, alertWebhookUrl: shown.alert_webhook_url, maxRetries: 7 })).status, 200);
+    const stored = ha.storage.getEndpoint('ep_a2');
+    assert.strictEqual(stored.target_url, real, 'stored target must keep the real password');
+    assert.strictEqual(stored.alert_webhook_url, realAlert, 'stored alert URL must keep the real password');
+    assert.strictEqual(stored.max_retries, 7);
+    const fresh = await post({ id: 'ep_a2_new', name: 'n', targetUrl: 'https://user:********@example.com/hook' });
+    assert.strictEqual(fresh.status, 400, 'a masked URL with nothing stored to restore must be refused');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('A3: API-key-as-username and (on the public demo) query tokens are masked', async () => {
+  const ha = await startHA({ demoMode: true, apiKey: 'k'.repeat(64) });
+  try {
+    ha.storage.createEndpoint({ id: 'ep_a3_user', name: 'u', targetUrl: 'https://sk_live_KEYASUSER@example.com/hook' });
+    ha.storage.createEndpoint({ id: 'ep_a3_query', name: 'q', targetUrl: 'https://example.com/hook?token=sk_live_QUERYTOKEN' });
+    const text = await (await fetch(`${ha.base}/api/endpoints`)).text();
+    assert.ok(!text.includes('sk_live_KEYASUSER'), 'username-only credential leaked');
+    assert.ok(!text.includes('sk_live_QUERYTOKEN'), 'query token leaked on the public demo');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('A4: WebSocket login throttle cannot be dodged by forging X-Forwarded-For', async () => {
+  const orig = process.env.HOOKARMOR_TRUST_PROXY;
+  process.env.HOOKARMOR_TRUST_PROXY = '1';
+  const KEY = 'k'.repeat(64);
+  const ha = await startHA({ apiKey: KEY });
+  const attempt = (xff, token) => new Promise((resolve) => {
+    const ws = new WebSocket(ha.base.replace('http', 'ws') + '/ws', { headers: { 'x-forwarded-for': xff } });
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'auth', token })));
+    ws.on('message', () => { resolve('ok'); ws.close(); });
+    ws.on('close', (code) => resolve(code));
+    ws.on('error', () => resolve('error'));
+  });
+  try {
+    const codes = [];
+    // The proxy appends the real client (203.0.113.7); the first value is whatever the client typed
+    for (let i = 0; i < 40; i++) codes.push(await attempt(`10.9.${i}.1, 203.0.113.7`, 'wrong'));
+    assert.ok(codes.includes(4029), 'rotating the forged first value must not reset the throttle');
+    // ...and forging somebody else's address must not lock that person out
+    for (let i = 0; i < 35; i++) await attempt('198.51.100.5, 203.0.113.7', 'wrong');
+    assert.strictEqual(await attempt('198.51.100.5', KEY), 'ok', 'the genuine client at the forged address must still get in');
+  } finally {
+    process.env.HOOKARMOR_TRUST_PROXY = orig || '';
+    if (!orig) delete process.env.HOOKARMOR_TRUST_PROXY;
+    await ha.close();
+  }
+});
+
+test('A5: a captured Stripe webhook cannot be re-sent as GitHub on an unpinned endpoint', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_a5', name: 'a5', targetUrl: 'https://example.com/a', secret: 'whsec_shared_secret' });
+    const body = JSON.stringify({ id: 'evt_old', type: 'invoice.paid' });
+    const old = stripeSig('whsec_shared_secret', body, Math.floor(Date.now() / 1000) - 30 * 86400);
+    const res = await fetch(`${ha.base}/in/ep_a5`, {
+      method: 'POST',
+      headers: { 'X-GitHub-Event': 'push', 'X-GitHub-Delivery': 'guid-1', 'X-Hub-Signature-256': `sha256=${old.v1}` },
+      body: `${old.t}.${body}`
+    });
+    assert.strictEqual(res.status, 400, 'stale Stripe signature must not verify under the GitHub scheme');
+    assert.ok(!ha.storage.getEndpoint('ep_a5').provider, 'endpoint must not be pinned to the wrong provider');
+    const fresh = stripeSig('whsec_shared_secret', body);
+    const ok = await fetch(`${ha.base}/in/ep_a5`, { method: 'POST', headers: { 'Stripe-Signature': fresh.header }, body });
+    assert.strictEqual(ok.status, 200, 'genuine Stripe traffic must still be accepted');
+    // A GitHub endpoint (secret without the whsec_ prefix) is unaffected
+    ha.storage.createEndpoint({ id: 'ep_a5_gh', name: 'gh', targetUrl: 'https://example.com/a', secret: 'plain-github-secret' });
+    const sig = crypto.createHmac('sha256', 'plain-github-secret').update(body).digest('hex');
+    const gh = await fetch(`${ha.base}/in/ep_a5_gh`, { method: 'POST', headers: { 'X-GitHub-Event': 'push', 'X-GitHub-Delivery': 'guid-2', 'X-Hub-Signature-256': `sha256=${sig}` }, body });
+    assert.strictEqual(gh.status, 200);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('A6: an event interrupted before its first attempt is retried even when auto-retry is off', async () => {
+  const ha = await startHA();
+  try {
+    ha.storage.createEndpoint({ id: 'ep_a6', name: 'a6', targetUrl: 'https://example.com/a', autoRetry: 0 });
+    ha.storage.saveEvent({ id: 'evt_a6', endpointId: 'ep_a6', provider: 'generic', headers: {}, rawBody: '{}', status: 'replaying', claimedBy: 'inst_dead' });
+    ha.storage.db.prepare("UPDATE events SET claimed_at = datetime('now','-120 seconds'), created_at = datetime('now','-120 seconds') WHERE id = 'evt_a6'").run();
+    ha.storage.recoverInterruptedDeliveries(60);
+    const due = ha.storage.getEventsDueForRetry(50).map((e) => e.id);
+    assert.ok(due.includes('evt_a6'), 'recovered event must be picked up by the worker');
+  } finally {
+    await ha.close();
+  }
+});
+
+test('A7: CLI backup refuses a path with no database instead of saving an empty one', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-backup-'));
+  const { execFile } = require('child_process');
+  const run = (args) => new Promise((resolve) => execFile(process.execPath, ['bin/hookarmor.js', 'backup', ...args], (err, stdout, stderr) => resolve({ code: err ? err.code : 0, out: stdout + stderr })));
+  const missing = await run([path.join(dir, 'out.db'), '--db', path.join(dir, 'typo.db')]);
+  assert.notStrictEqual(missing.code, 0, 'backup of a missing database must fail');
+  assert.deepStrictEqual(fs.readdirSync(dir), [], 'no database files may be created');
+  const src = new Storage(path.join(dir, 'real.db'));
+  src.createEndpoint({ id: 'ep_a7', name: 'a7', targetUrl: 'https://example.com/a' });
+  src.saveEvent({ id: 'evt_a7', endpointId: 'ep_a7', provider: 'generic', headers: {}, rawBody: '{}', status: 'delivered' });
+  src.close();
+  const ok = await run([path.join(dir, 'copy.db'), '--db', path.join(dir, 'real.db')]);
+  assert.strictEqual(ok.code, 0, ok.out);
+  assert.ok(ok.out.includes('1 events'), ok.out);
+  const copy = new Storage(path.join(dir, 'copy.db'));
+  assert.ok(copy.getEvent('evt_a7'));
+  copy.close();
 });
 
 (async () => {

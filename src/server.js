@@ -129,18 +129,40 @@ function validateCustomHeaders(value) {
   return { headers: clean };
 }
 
-function maskUrlCredentials(urlStr) {
+const URL_MASK = '********';
+
+// Hides credentials embedded in a URL. `https://key@host` (API key as the username) is as secret as a
+// password, and on the public demo a `?token=` query value is too.
+function maskUrlCredentials(urlStr, isDemo = false) {
   if (!urlStr || typeof urlStr !== 'string') return urlStr;
   try {
     const u = new URL(urlStr);
+    let changed = false;
     if (u.password) {
-      u.password = '********';
-      return u.toString();
+      u.password = URL_MASK;
+      changed = true;
+    } else if (u.username) {
+      u.username = URL_MASK;
+      changed = true;
     }
-    return urlStr;
+    if (isDemo && u.search) {
+      for (const key of [...u.searchParams.keys()]) u.searchParams.set(key, URL_MASK);
+      changed = true;
+    }
+    return changed ? u.toString() : urlStr;
   } catch (_) {
     return urlStr;
   }
+}
+
+// The API hands out masked URLs. If a client reads an endpoint and writes the same value back, restore
+// the stored URL instead of saving the asterisks (which would silently break delivery or alerting).
+function unmaskSubmittedUrl(submitted, stored, maskers) {
+  if (typeof submitted !== 'string' || !submitted.includes(URL_MASK) && !submitted.includes(encodeURIComponent(URL_MASK))) {
+    return { url: submitted };
+  }
+  if (stored && maskers.some((mask) => mask(stored) === submitted)) return { url: stored };
+  return { error: 'contains the ******** placeholder shown by the API in place of a credential; send the real URL' };
 }
 
 function maskAlertWebhookUrl(urlStr, isDemo = false) {
@@ -148,7 +170,12 @@ function maskAlertWebhookUrl(urlStr, isDemo = false) {
   try {
     const u = new URL(urlStr);
     if (u.password) {
-      u.password = '********';
+      u.password = URL_MASK;
+    } else if (u.username) {
+      u.username = URL_MASK;
+    }
+    if (isDemo && u.search) {
+      for (const key of [...u.searchParams.keys()]) u.searchParams.set(key, URL_MASK);
     }
     if (isDemo && u.pathname && u.pathname.length > 8) {
       const parts = u.pathname.split('/');
@@ -179,7 +206,7 @@ function publicEndpoint(ep, isDemo = false) {
   }
   return {
     ...rest,
-    target_url: maskUrlCredentials(rest.target_url),
+    target_url: maskUrlCredentials(rest.target_url, isDemo),
     alert_webhook_url: maskAlertWebhookUrl(rest.alert_webhook_url, isDemo),
     custom_headers: maskedHeaders,
     has_secret: Boolean(secret),
@@ -389,12 +416,15 @@ function createServer(options = {}) {
   // could stop the whole gateway with a single oversized frame.
   wss.on('error', (err) => console.error('[WebSocket] server error:', err.message));
 
+  // Same rule Express applies to req.ip for a numeric `trust proxy`: walk back from the socket through
+  // that many proxy hops. The FIRST X-Forwarded-For value is supplied by the client, so keying on it let
+  // an attacker dodge the throttle with a new fake address per attempt, or lock out someone else's.
   const getWsClientIp = (req) => {
-    if (trustProxy && req && req.headers && req.headers['x-forwarded-for']) {
-      const forwarded = String(req.headers['x-forwarded-for']).split(',')[0].trim();
-      if (forwarded) return forwarded;
-    }
-    return (req && req.socket && req.socket.remoteAddress) || '127.0.0.1';
+    const remote = (req && req.socket && req.socket.remoteAddress) || '127.0.0.1';
+    const hops = /^\d+$/.test(String(trustProxy || '')) ? parseInt(trustProxy, 10) : 0;
+    if (!hops || !req || !req.headers || !req.headers['x-forwarded-for']) return remote;
+    const chain = [remote, ...String(req.headers['x-forwarded-for']).split(',').map((v) => v.trim()).filter(Boolean).reverse()];
+    return chain[Math.min(hops, chain.length - 1)];
   };
 
   wss.on('connection', (socket, req) => {
@@ -634,6 +664,19 @@ function createServer(options = {}) {
     // Provider scheme pinning check (F-03). 'generic' and aliases such as 'svix' are normalised,
     // so rows saved by older dashboards/CLIs ('generic', 'svix') do not reject valid traffic.
     const pinnedProvider = Dispatcher.normalizeProvider(endpoint.provider);
+    // `whsec_` secrets are issued only by Stripe and Svix/Clerk, both of which sign a timestamp. Until the
+    // endpoint is pinned, a captured Stripe request could otherwise be re-sent as "GitHub" or "Razorpay"
+    // (body = "<t>.<payload>", same hex HMAC), skipping the 5-minute tolerance and pinning the endpoint
+    // to the wrong provider so that every genuine Stripe event is refused afterwards.
+    if (pinnedProvider === null && endpoint.secret && String(endpoint.secret).startsWith('whsec_')
+        && provider !== 'stripe' && provider !== 'clerk/svix') {
+      badSignatureLimiter(req.ip);
+      noteIngressReject(endpoint, 'scheme_mismatch', `Secret is a Stripe/Svix signing secret, received ${provider}`);
+      return res.status(400).json({
+        error: `Signature scheme mismatch: this endpoint holds a Stripe/Svix signing secret, but received ${provider}`,
+        provider
+      });
+    }
     if (pinnedProvider !== null && provider !== pinnedProvider) {
       if (endpoint.secret) badSignatureLimiter(req.ip);
       noteIngressReject(endpoint, 'scheme_mismatch', `Configured for ${endpoint.provider}, received ${provider}`);
@@ -843,12 +886,21 @@ function createServer(options = {}) {
 
   // Create or Update Endpoint
   app.post('/api/endpoints', (req, res) => {
-    const { id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry, maxRetries, concurrencyLimit, concurrency_limit, customHeaders, custom_headers } = req.body || {};
+    const { id, name, secret, provider, autoRetry, maxRetries, concurrencyLimit, concurrency_limit, customHeaders, custom_headers } = req.body || {};
+    let { targetUrl, alertWebhookUrl } = req.body || {};
     if (typeof id !== 'string' || !ENDPOINT_ID_PATTERN.test(id)) {
       return res.status(400).json({ error: 'id must be 1-64 characters: letters, digits, "-" or "_"' });
     }
     // Updates may omit fields; omitted fields keep their stored values
     const existing = storage.getEndpoint(id);
+    const restoredTarget = unmaskSubmittedUrl(targetUrl, existing && existing.target_url,
+      [(u) => maskUrlCredentials(u, false), (u) => maskUrlCredentials(u, true)]);
+    if (restoredTarget.error) return res.status(400).json({ error: `targetUrl ${restoredTarget.error}` });
+    targetUrl = restoredTarget.url;
+    const restoredAlert = unmaskSubmittedUrl(alertWebhookUrl, existing && existing.alert_webhook_url,
+      [(u) => maskAlertWebhookUrl(u, false), (u) => maskAlertWebhookUrl(u, true)]);
+    if (restoredAlert.error) return res.status(400).json({ error: `alertWebhookUrl ${restoredAlert.error}` });
+    alertWebhookUrl = restoredAlert.url;
     if (!targetUrl || (!existing && !name)) {
       return res.status(400).json({ error: 'id, name, and targetUrl are required' });
     }
@@ -898,7 +950,7 @@ function createServer(options = {}) {
       provider: cleanProvider,
       alertWebhookUrl: alertWebhookUrl === undefined ? undefined : String(alertWebhookUrl || ''),
       autoRetry: cleanAutoRetry,
-      maxRetries: clampInt(maxRetries, existing ? existing.max_retries : 5, 1, 50),
+      maxRetries: clampInt(maxRetries, existing ? existing.max_retries : Storage.DEFAULT_MAX_RETRIES, 1, 50),
       concurrencyLimit: clampInt(rawConcurrency, existing ? existing.concurrency_limit : 5, 1, 100),
       customHeaders: headerCheck.headers
     });

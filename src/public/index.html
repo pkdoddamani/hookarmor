@@ -466,7 +466,7 @@
     <a href="/" class="brand">
       <div class="brand-icon">🛡️</div>
       <div class="brand-text">
-        <h1>HookArmor <span class="brand-tag">v1.4.4 Live</span></h1>
+        <h1>HookArmor <span class="brand-tag">v1.4.5 Live</span></h1>
       </div>
     </a>
     <div class="nav-actions">
@@ -1091,7 +1091,7 @@
       const res = await fetch('/api/endpoints', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ id, name, targetUrl, provider, alertWebhookUrl, autoRetry: 1, maxRetries: 5, ...(secret ? { secret } : {}) })
+        body: JSON.stringify({ id, name, targetUrl, provider, alertWebhookUrl, ...(secret ? { secret } : {}) })
       });
 
       if (res.status === 401) {

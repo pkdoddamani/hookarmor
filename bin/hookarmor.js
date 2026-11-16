@@ -140,8 +140,7 @@ program
         // Not pinned: the dashboard simulator also sends Shopify and GitHub templates here
         provider: null,
         alertWebhookUrl: '',
-        autoRetry: 1,
-        maxRetries: 5
+        autoRetry: 1
       });
     }
 
@@ -181,8 +180,7 @@ program
       name: `Local Tunnel -> ${targetUrl}`,
       targetUrl,
       secret: options.secret,
-      autoRetry: 1,
-      maxRetries: 5
+      autoRetry: 1
     });
 
     dispatcher.on('delivery', (res) => {
@@ -445,7 +443,7 @@ endpointsCmd
   .option('-p, --provider <provider>', 'Provider scheme (stripe, shopify, github, razorpay, svix/clerk, generic)')
   .option('-a, --alert <url>', 'Alert webhook URL')
   .option('--headers <json>', 'Custom destination headers JSON string')
-  .option('--max-retries <num>', 'Maximum retry attempts (default 5 for new endpoints)')
+  .option('--max-retries <num>', 'Maximum delivery attempts per event (default 10 for new endpoints, about 3.8 days of retries)')
   .option('--concurrency <num>', 'Concurrency limit (default 5 for new endpoints)')
   .option('-u, --url <url>', 'HookArmor server URL', 'http://localhost:4000')
   .option('-k, --api-key <key>', 'Admin API key', process.env.HOOKARMOR_API_KEY)
@@ -554,20 +552,31 @@ endpointsCmd
 program
   .command('backup [destination]')
   .description('Create a consistent online hot-backup of the SQLite database')
-  .option('--db <path>', 'Database path', process.env.HOOKARMOR_DB_PATH || './hookarmor.db')
+  .option('--db <path>', 'Database path (default: the same file the server uses)',
+    process.env.HOOKARMOR_DB_PATH || require('path').join(process.env.HOOKARMOR_DATA_DIR || require('path').join(process.cwd(), 'data'), 'hookarmor.db'))
   .action(async (destination, opts) => {
     const dest = destination || `hookarmor-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
-    const Storage = require('../src/storage');
-    const storage = new Storage(opts.db);
+    // Opening a path that does not exist would create an empty database and "back it up" successfully
+    if (!require('fs').existsSync(opts.db)) {
+      console.error(chalk.red.bold(`✖ Backup failed: no database at ${opts.db}. Pass the real path with --db.`));
+      process.exitCode = 1;
+      return;
+    }
+    const Database = require('better-sqlite3');
+    let db;
     try {
+      db = new Database(opts.db, { fileMustExist: true });
       console.log(chalk.blue(`Initiating hot backup from ${opts.db} to ${dest}...`));
-      await storage.backup(dest);
-      console.log(chalk.green.bold(`✔ Backup completed successfully: ${dest}`));
+      await db.backup(dest);
+      const events = new Database(dest, { readonly: true, fileMustExist: true });
+      const count = events.prepare('SELECT count(*) AS n FROM events').get().n;
+      events.close();
+      console.log(chalk.green.bold(`✔ Backup completed successfully: ${dest} (${count} events)`));
     } catch (err) {
       console.error(chalk.red.bold(`✖ Backup failed: ${err.message}`));
       process.exitCode = 1;
     } finally {
-      storage.close();
+      if (db) db.close();
     }
   });
 

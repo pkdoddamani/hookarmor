@@ -170,7 +170,7 @@ class Storage {
         provider TEXT,
         alert_webhook_url TEXT,
         auto_retry INTEGER DEFAULT 1,
-        max_retries INTEGER DEFAULT 5,
+        max_retries INTEGER DEFAULT 10,
         concurrency_limit INTEGER DEFAULT 5,
         consecutive_failures INTEGER DEFAULT 0,
         streak_started_at TEXT,
@@ -286,7 +286,7 @@ class Storage {
 
   // Upsert. Omitting secret, alertWebhookUrl or customHeaders (undefined) keeps the stored value; '' / {} clears it.
   // (customHeaders must not have a destructuring default, or the keep-existing branch below never runs.)
-  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = 5, concurrencyLimit = 5, customHeaders }) {
+  createEndpoint({ id, name, targetUrl, secret, provider, alertWebhookUrl, autoRetry = 1, maxRetries = Storage.DEFAULT_MAX_RETRIES, concurrencyLimit = 5, customHeaders }) {
     const existing = this.getEndpoint(id);
     const finalSecret = secret !== undefined ? secret : (existing ? existing.secret : '');
     const finalProvider = provider !== undefined ? provider : (existing ? existing.provider : null);
@@ -861,8 +861,8 @@ class Storage {
   recoverInterruptedDeliveries(leaseTimeoutSeconds = 60) {
     const sql = `
       UPDATE events
-      SET status = 'failed',
-          next_retry_at = datetime('now'),
+      SET status = CASE WHEN attempts = 0 THEN 'pending' ELSE 'failed' END,
+          next_retry_at = CASE WHEN attempts = 0 THEN NULL ELSE datetime('now') END,
           last_error = COALESCE(last_error, 'Delivery lease expired or interrupted by restart'),
           claimed_by = NULL,
           claimed_at = NULL,
@@ -928,5 +928,10 @@ Storage.toSqliteTime = toSqliteTime;
 Storage.deriveKey = deriveKey;
 Storage.encryptSecret = encryptSecret;
 Storage.decryptSecret = decryptSecret;
+
+// Attempts per event for new endpoints. With the schedule in dispatcher.calculateNextRetry
+// (30s, 2m, 10m, 30m, 2h, 5h, 12h, 24h, 48h) ten attempts keep retrying for about 3.8 days, past
+// Stripe's own 3-day window. Five attempts stopped after roughly 43 minutes.
+Storage.DEFAULT_MAX_RETRIES = 10;
 
 module.exports = Storage;
