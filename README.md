@@ -53,7 +53,7 @@ Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks
 2. **Cryptographic Header & Signature Preservation**: Forwards exact raw bytes, `stripe-signature`, `x-shopify-hmac-sha256`, and timestamps.
 3. **Dead-Letter Queue (DLQ)**: If your server returns 500, 502, 504, 429, or times out, HookArmor safely preserves the raw event with full error diagnostics.
 4. **Instant Alerts**: Sends immediate Slack / Discord webhooks when an endpoint begins failing.
-5. **Webhook Disablement Sentinel**: Actively tracks consecutive delivery failure streaks per provider (Shopify 19-failure deletion cutoff, Razorpay 24h auto-disable cutoff) and dispatches tiered warnings before upstream subscriptions are cancelled or deleted, with automatic recovery notifications when restored.
+5. **Delivery Sentinel and ingress rejection alerts**: Tracks each endpoint's streak of failed deliveries to your app and sends tiered warnings (warning, danger, critical) plus a recovery notice. Your provider keeps receiving `200` from HookArmor during such a streak, so the subscription is not at risk; events are held for retry and replay. What does put a subscription at risk is HookArmor refusing webhooks (for example after a signing secret is rotated at the provider but not here): those rejections are counted per endpoint in the API and `/metrics` and raise their own alert.
 6. **1-Click Bulk Replay**: As soon as you push your code fix, hit **Replay All Dead-Letter** in the Web UI or run `hookarmor replay --failed` to re-deliver customer transactions.
 7. **Local Dev Relay**: `hookarmor listen http://localhost:3000/api/webhooks` to proxy webhooks straight into local dev servers with automatic re-signing.
 
@@ -118,7 +118,7 @@ npx hookarmor replay evt_1758513516086_m8r0e7 -y
 
 ## 📊 Verification Test Suite
 
-HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus an 89-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**97 tests total**):
+HookArmor includes an 8-scenario verification suite (`test/verify.js`) plus a 106-case regression suite (`test/regression.js`) covering retry scheduling, crash recovery, multi-instance lease claims, cascading deletion, duplicate suppression, signature verification for every supported provider, outbound address validation, authentication, and dashboard escaping (**97 tests total**):
 ```bash
 npm test
 ```
@@ -360,7 +360,8 @@ When `HOOKARMOR_API_KEY` is present:
 | `HOOKARMOR_MAX_QUEUED_IN_MEMORY` | `1000` | Deliveries per endpoint allowed to wait in memory for a concurrency slot; beyond this, new events are parked in SQLite and picked up by the retry worker |
 | `HOOKARMOR_SIGNING_SECRET` | none | Enables Mode B internal signatures |
 | `HOOKARMOR_DATA_DIR` | `./data` (current directory) | Where `hookarmor.db` is stored |
-| `HOOKARMOR_RETENTION_DAYS` | `30` | Delete delivered events older than this many days (`0` keeps them forever); failed events are always kept |
+| `HOOKARMOR_RETENTION_DAYS` | `30` | Delete delivered events older than this many days (`0` keeps them forever); failed events are governed by `HOOKARMOR_FAILED_RETENTION_DAYS` |
+| `HOOKARMOR_FAILED_RETENTION_DAYS` | `0` | Delete events that ran out of retries after this many days in the DLQ (`0`, the default, keeps them forever) |
 | `HOOKARMOR_MAX_BODY` | `10mb` | Maximum webhook body size |
 | `HOOKARMOR_ENABLE_MOCK` | `false` in production | Mount the `/mock/*` simulation receiver |
 | `HOOKARMOR_CORS_ORIGINS` | none | Comma-separated origins allowed to call `/api` from a browser |
