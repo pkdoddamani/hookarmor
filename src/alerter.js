@@ -95,9 +95,14 @@ class Alerter {
       return;
     }
 
-    const hint = kind === 'signature' || kind === 'scheme_mismatch'
+    // Unlike a failing destination, these ARE failures in the provider's eyes
+    const provider = String((endpoint && endpoint.provider) || '').toLowerCase();
+    const providerPolicy = provider === 'shopify'
+      ? ' Shopify retries a failed delivery up to 8 times over 4 hours and removes the subscription if failures persist.'
+      : (provider === 'stripe' ? ' Stripe retries for up to 3 days in live mode.' : ' The provider may disable the webhook if failures persist.');
+    const hint = (kind === 'signature' || kind === 'scheme_mismatch'
       ? 'If the provider signing secret was rotated, update it on this endpoint. Until then every webhook is refused and the provider records a failed delivery.'
-      : 'The sender is receiving errors from HookArmor and will retry on its own schedule.';
+      : 'The sender is receiving errors from HookArmor and will retry on its own schedule.') + providerPolicy;
     const title = `HookArmor is REJECTING incoming webhooks for ${endpoint.name}`;
     const payload = {
       text: `🚨 [HookArmor Ingress] ${title}`,
@@ -153,7 +158,7 @@ class Alerter {
             { title: 'Endpoint', value: `${endpoint.name} (${endpoint.id})`, short: true },
             { title: 'Provider', value: (risk.provider || 'generic').toUpperCase(), short: true },
             { title: 'Consecutive Failures', value: `${risk.consecutiveFailures}`, short: true },
-            { title: 'Cutoff Policy', value: risk.cutoff ? `${risk.cutoff} failures (Remaining: ${risk.remaining})` : (risk.cutoffHours ? `24h (Remaining: ~${risk.hoursRemaining}h)` : 'Retries failing'), short: true },
+            { title: 'Provider subscription', value: 'Not at risk: the provider receives 200 from HookArmor', short: true },
             { title: 'Target Destination', value: safeUrl(endpoint.target_url), short: false }
           ],
           footer: 'HookArmor Disablement Sentinel',
