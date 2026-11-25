@@ -13,7 +13,7 @@
 
 Every developer using Stripe, Shopify, GitHub, Clerk, Paddle, or custom webhooks faces catastrophic silent revenue loss when:
 1. **Serverless cold starts & timeouts**: Next.js, Vercel, or AWS Lambda cold starts hit the 10-15s webhook limit.
-2. **Zero-downtime deploy reboots**: Container restarts on Render, Railway, or Fly.io return transient `502 Bad Gateway`.
+2. **Zero-downtime deploy reboots**: Container restarts on Render, Fly.io, or Kubernetes return transient `502 Bad Gateway`.
 3. **Database connection pool exhaustion**: Prisma or Postgres locks during sudden traffic spikes cause unhandled `500 Internal Server Error`.
 4. **Stripe's painful retry schedule**: When Stripe receives a failure, it backs off exponentially (1 hour, then several hours, then days). Meanwhile, your paying customer logs in, sees "Free Plan", assumes a scam, and disputes the charge or issues a refund.
 
@@ -325,7 +325,7 @@ When enabled, all provider webhook secrets, custom destination headers, and payl
 When running HookArmor locally on your laptop (`localhost`), management endpoints and the replay dashboard operate without authentication for fast developer onboarding.
 
 > [!WARNING]
-> **When deploying HookArmor to a public server or self-hosted cloud container (Railway, Render, VPS), you MUST set the `HOOKARMOR_API_KEY` environment variable.**
+> **When deploying HookArmor to a public server or self-hosted cloud container (Render, Docker, VPS), you MUST set the `HOOKARMOR_API_KEY` environment variable.**
 
 ```bash
 # Generate a strong 256-bit random key
@@ -335,7 +335,7 @@ openssl rand -hex 32
 HOOKARMOR_API_KEY=ha_sec_your_secure_random_key_here
 ```
 
-When `HOOKARMOR_API_KEY` is **not** set, the management API only answers requests addressed to `localhost`, and the server refuses to start in production (`NODE_ENV=production`, Railway or Render) unless `HOOKARMOR_ALLOW_NO_AUTH=true`.
+When `HOOKARMOR_API_KEY` is **not** set, the management API only answers requests addressed to `localhost`, and the server refuses to start in production (`NODE_ENV=production` or Render) unless `HOOKARMOR_ALLOW_NO_AUTH=true`.
 
 When `HOOKARMOR_API_KEY` is present:
 * All management and inspection endpoints (`/api/stats`, `/api/endpoints`, `/api/events`, `/api/events/:id/replay`, `/api/events/replay-all`) strictly reject unauthenticated requests with `401 Unauthorized` and require `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
@@ -365,13 +365,25 @@ When `HOOKARMOR_API_KEY` is present:
 | `HOOKARMOR_MAX_BODY` | `10mb` | Maximum webhook body size |
 | `HOOKARMOR_ENABLE_MOCK` | `false` in production | Mount the `/mock/*` simulation receiver |
 | `HOOKARMOR_CORS_ORIGINS` | none | Comma-separated origins allowed to call `/api` from a browser |
-| `HOOKARMOR_TRUST_PROXY` | `1` on Railway/Render | Express `trust proxy` setting, used for per-client rate limits |
-| `HOOKARMOR_DEMO_MODE` | `false` | Read-only public demo |
+| `HOOKARMOR_TRUST_PROXY` | `1` on Render | Express `trust proxy` setting, used for per-client rate limits (also honored by WebSocket auth throttling) |
+| `HOOKARMOR_REQUIRE_SECRETS` | `false` | Compliance mode: strictly refuse creating endpoints without signing secrets and reject webhooks without secrets |
+| `HOOKARMOR_DEMO_MODE` | `false` | Read-only public demo (auto-seeds sandbox endpoints/events when starting via CLI on an empty DB) |
 | `HOOKARMOR_ALLOW_NO_AUTH` | `false` | Allow production start without an API key (trusted networks only) |
 | `HOOKARMOR_ENCRYPT_BODIES` | `false` | Also encrypt webhook bodies at rest (AES-256-GCM, requires `HOOKARMOR_ENCRYPTION_KEY`). Bodies are decrypted transparently for delivery, the dashboard and the CLI. Bodies stored before it was turned on are encrypted at startup |
 | `HOOKARMOR_BODY_DEDUPE_HOURS` | `24` | Shopify, GitHub and Razorpay sign only the body, not the delivery id, so a captured webhook can be re-sent under a new id. A verified event whose provider, event type (e.g. Shopify topic) and body are identical to a verified event received within this window is acknowledged as a duplicate and not delivered again. `0` disables |
 | `HOOKARMOR_RETRY_BATCH_SIZE` | `200` | Events the retry worker claims per batch (up to 5 batches every 5 seconds) |
 | `HOOKARMOR_ENABLE_WAITLIST` | on only where the landing page is served | Public `POST /api/waitlist` signup used by the marketing landing page |
+
+## 🚀 What's New in v1.4.2 – v1.4.6
+
+1. **96-Hour / 10-Attempt Retry Window**: New endpoints default to `10` delivery attempts (`30s` ➔ `48h`), outlasting Stripe's 3-day retry schedule. Existing databases on the legacy 5-attempt default are automatically upgraded once at startup (explicit custom values are preserved).
+2. **Strict Compliance Mode (`HOOKARMOR_REQUIRE_SECRETS=true`)**: Enforces mandatory cryptographic webhook signing secrets on both endpoint creation and ingress.
+3. **Delivery Sentinel & Ingress Rejection Tracking**: Reports failing destination streaks without misleading provider cutoff countdowns, and tracks refused ingress webhooks (bad/rotated signatures, wrong provider scheme, rate limits, full queue) via API (`ingressRejections`), `/metrics` (`hookarmor_ingress_rejected_total`), and dedicated alerts.
+4. **Instant Local Startup & Exception Recovery**: Dead local processes are reaped immediately on startup, and `uncaughtException` / `unhandledRejection` release in-flight claims cleanly before exit.
+5. **Credential Unmasking & Header Hardening**: Submitting API-masked `targetUrl`, `alertWebhookUrl`, or `customHeaders` (`••••••••`) back on endpoint updates restores stored credentials cleanly; unknown masks are refused with HTTP `400`, and `*secret*`/`*token*`/`*password*` headers are masked in API output.
+6. **Hardened IPv6 & Tunnel SSRF Defense**: Blocks deprecated IPv4-compatible `::/96`, local NAT64 `64:ff9b:1::/48`, and 6to4 `2002::/16` addresses in addition to `::ffff:0:0/96`, `64:ff9b::/96`, and cloud IMDS (`169.254.169.254`, `fd00:ec2::254`).
+7. **5,000-ID Bulk Replays & Validated Hot Backups**: `POST /api/events/replay-all` supports full 5,000-ID batches (`512kb` cap), and `hookarmor backup` defaults to the server's DB path, fails on missing databases, and prints backed-up event counts.
+8. **Zero External Font Dependencies & `no-store` API Caching**: Removes external font requests blocked by strict `default-src 'self'` CSP across all pages, and marks API/metrics responses `Cache-Control: no-store`.
 
 ## 📦 Upgrade Notes (v1.4.0)
 

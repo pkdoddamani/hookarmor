@@ -427,9 +427,9 @@
 
       <div class="card">
         <div class="card-icon" style="background: rgba(244, 63, 94, 0.1); color: #f43f5e;">💀</div>
-        <h3>Burst-Proof SQLite DLQ</h3>
+        <h3>Burst-Proof SQLite DLQ (~96h Window)</h3>
         <p>
-          Hardened with <code>PRAGMA busy_timeout = 5000</code> and WAL concurrency. If your backend fails or throttles (429/500/504), raw payloads are quarantined without SQLITE_BUSY crashes.
+          Hardened with <code>PRAGMA busy_timeout = 5000</code>, WAL concurrency, and a 10-attempt retry budget (up to ~96 hours) that outlasts Stripe's 3-day retry schedule without dropping events.
         </p>
       </div>
 
@@ -437,7 +437,7 @@
         <div class="card-icon" style="background: rgba(16, 185, 129, 0.1); color: #34d399;">🔄</div>
         <h3>1-Click Replay &amp; Resigning</h3>
         <p>
-          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> or use the CLI. Fresh HMAC timestamps and re-computed signatures defeat gateway expiration windows.
+          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> or use the CLI (up to 5,000-ID batches). Fresh HMAC timestamps and re-computed signatures defeat gateway expiration windows.
         </p>
       </div>
 
@@ -445,15 +445,15 @@
         <div class="card-icon" style="background: rgba(168, 85, 247, 0.1); color: #c084fc;">🔐</div>
         <h3>AES-256-GCM &amp; SSRF Guard</h3>
         <p>
-          At-rest AES-256-GCM encryption with 12-byte random IVs for secrets and webhook bodies. Multi-layer SSRF defense blocks cloud metadata (IMDS) and private ranges.
+          At-rest AES-256-GCM encryption for secrets, headers, and bodies, plus <code>HOOKARMOR_REQUIRE_SECRETS</code> compliance mode and multi-layer IPv4/IPv6 SSRF protection.
         </p>
       </div>
 
       <div class="card">
         <div class="card-icon" style="background: rgba(245, 158, 11, 0.1); color: #fbbf24;">🚨</div>
-        <h3>Discord & Slack Webhooks</h3>
+        <h3>Sentinel &amp; Rejection Alerts</h3>
         <p>
-          Get notified within 1 second of an endpoint failure with the event ID, HTTP status code, and error body delivered directly to your engineering channel.
+          Instant Slack/Discord alerts on destination failure streaks and ingress signature rejections (e.g., rotated secrets), plus Prometheus <code>/metrics</code> observability.
         </p>
       </div>
 
