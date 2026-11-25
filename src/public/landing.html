@@ -3,28 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HookArmor - Never Lose a Stripe or Shopify Webhook Again</title>
-  <meta name="description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), Ingress Proxy, and 1-Click Replay Gateway for Stripe, Shopify, Clerk, and modern B2B SaaS.">
+  <title>HookArmor — Zero-Loss Webhook Infrastructure &amp; Dead-Letter Replay Proxy</title>
+  <meta name="description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), sub-10ms ingress buffer, automatic HMAC signature re-signing, and 1-click replay gateway for Stripe, Shopify, Clerk, and B2B SaaS.">
   <link rel="canonical" href="https://hookarmour.dev/">
-  
-  <!-- OpenGraph / Facebook / LinkedIn / Slack -->
+
+  <!-- OpenGraph / Twitter -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://hookarmour.dev/">
-  <meta property="og:title" content="HookArmor - Never Lose a Stripe or Shopify Webhook Again">
-  <meta property="og:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), instant buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+  <meta property="og:title" content="HookArmor — Zero-Loss Webhook Infrastructure &amp; Dead-Letter Replay Proxy">
+  <meta property="og:description" content="Sub-10ms ingress acknowledgements, durable SQLite WAL custody, and ~96-hour exponential retries with fresh HMAC re-signing.">
   <meta property="og:site_name" content="HookArmor">
   <meta property="og:image" content="https://hookarmour.dev/og-preview.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-
-  <!-- Twitter / X -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://hookarmour.dev/">
-  <meta name="twitter:title" content="HookArmor - Never Lose a Stripe or Shopify Webhook Again">
-  <meta name="twitter:description" content="Zero-loss Webhook Dead-Letter Queue (DLQ), instant buffer, and 1-click replay gateway for Stripe, Shopify, and B2B SaaS.">
+  <meta name="twitter:title" content="HookArmor — Zero-Loss Webhook Infrastructure &amp; Dead-Letter Replay Proxy">
+  <meta name="twitter:description" content="Sub-10ms ingress acknowledgements, durable SQLite WAL custody, and ~96-hour exponential retries with fresh HMAC re-signing.">
   <meta name="twitter:image" content="https://hookarmour.dev/og-preview.png">
 
-  <!-- JSON-LD Structured Data for Google Rich Snippets -->
+  <!-- Structured Data -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -44,347 +42,1546 @@
 
   <style>
     :root {
-      --bg: #070a12;
-      --bg-card: #0d1322;
-      --border: #1e293b;
-      --accent: #3b82f6;
-      --accent-glow: rgba(59, 130, 246, 0.25);
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      --bg: #06080d;
+      --bg-elevated: #0b0f17;
+      --bg-surface: #0e131d;
+      --bg-code: #05070b;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --text: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --blue: #3b82f6;
+      --blue-bright: #60a5fa;
+      --cyan: #38bdf8;
       --emerald: #10b981;
-      --rose: #f43f5e;
+      --amber: #f59e0b;
+      --rose: #ef4444;
       --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --radius-md: 10px;
+      --radius-lg: 14px;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
     body {
       background: var(--bg);
       color: var(--text);
       font-family: var(--font-sans);
       line-height: 1.6;
       overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    a { color: inherit; }
+    code, pre { font-family: var(--font-mono); }
+
+    /* Subtle Hero Architectural Grid */
+    .hero-backdrop {
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-backdrop::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 44px 44px;
+      -webkit-mask-image: radial-gradient(ellipse 75% 65% at 50% 8%, #000 30%, transparent 100%);
+      mask-image: radial-gradient(ellipse 75% 65% at 50% 8%, #000 30%, transparent 100%);
+      pointer-events: none;
+    }
+    .hero-backdrop::after {
+      content: "";
+      position: absolute;
+      top: -180px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 900px;
+      height: 440px;
+      background: radial-gradient(ellipse at center, rgba(37, 99, 235, 0.16) 0%, rgba(16, 185, 129, 0.05) 45%, transparent 72%);
+      pointer-events: none;
+    }
+
+    /* Sticky Glass Navigation */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(6, 8, 13, 0.78);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
     }
     nav {
-      max-width: 1200px;
+      max-width: 1180px;
       margin: 0 auto;
-      padding: 1.5rem 2rem;
+      padding: 0.9rem 1.5rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-    }
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      font-weight: 800;
-      font-size: 1.25rem;
-      color: white;
-      text-decoration: none;
-    }
-    .badge-v1 {
-      font-size: 0.65rem;
-      background: rgba(59, 130, 246, 0.15);
-      color: var(--accent);
-      border: 1px solid rgba(59, 130, 246, 0.3);
-      padding: 0.15rem 0.5rem;
-      border-radius: 9999px;
-      font-weight: 700;
-    }
-    .nav-cta {
-      display: flex;
       gap: 1rem;
-      align-items: center;
     }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.65rem;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: linear-gradient(145deg, rgba(59, 130, 246, 0.22), rgba(16, 185, 129, 0.12));
+      border: 1px solid rgba(96, 165, 250, 0.35);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--blue-bright);
+    }
+    .version-chip {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--emerald);
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.26);
+      padding: 0.14rem 0.48rem;
+      border-radius: 9999px;
+      letter-spacing: 0.01em;
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.75rem;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+    .nav-links a {
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+    }
+
     .btn {
       display: inline-flex;
       align-items: center;
-      gap: 0.5rem;
-      padding: 0.65rem 1.25rem;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.55rem 1.05rem;
       border-radius: 8px;
-      font-weight: 700;
-      font-size: 0.9rem;
+      font-weight: 600;
+      font-size: 0.875rem;
       text-decoration: none;
-      transition: all 0.2s;
+      border: 1px solid transparent;
       cursor: pointer;
+      transition: all 0.16s ease;
+      white-space: nowrap;
     }
     .btn-primary {
-      background: #2563eb;
-      color: white;
-      box-shadow: 0 4px 20px rgba(37, 99, 235, 0.4);
+      background: #f3f4f6;
+      color: #06080d;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     }
-    .btn-primary:hover { background: #1d4ed8; transform: translateY(-1px); }
-    .btn-outline {
-      background: transparent;
-      border: 1px solid var(--border);
+    .btn-primary:hover { background: #ffffff; transform: translateY(-1px); }
+    .btn-accent {
+      background: #2563eb;
+      color: #ffffff;
+      border-color: rgba(96, 165, 250, 0.35);
+      box-shadow: 0 4px 18px rgba(37, 99, 235, 0.3);
+    }
+    .btn-accent:hover { background: #1d4ed8; transform: translateY(-1px); }
+    .btn-ghost {
+      background: rgba(255, 255, 255, 0.03);
+      border-color: var(--border);
+      color: var(--text-secondary);
+    }
+    .btn-ghost:hover {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: var(--border-strong);
       color: var(--text);
     }
-    .btn-outline:hover { background: var(--bg-card); border-color: #475569; }
+
+    /* Container */
+    .container {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
 
     /* Hero */
     .hero {
-      max-width: 1100px;
-      margin: 4rem auto 2rem;
-      padding: 0 2rem;
+      position: relative;
+      z-index: 1;
+      padding: 4.75rem 0 3.5rem;
       text-align: center;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 1.5rem;
     }
-    .pill {
+    .eyebrow {
       display: inline-flex;
       align-items: center;
-      gap: 0.5rem;
-      background: rgba(16, 185, 129, 0.1);
-      color: var(--emerald);
-      border: 1px solid rgba(16, 185, 129, 0.25);
+      gap: 0.55rem;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
       padding: 0.35rem 0.85rem;
       border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 700;
+      margin-bottom: 1.5rem;
     }
-    h1 {
-      font-size: clamp(2.5rem, 5vw, 4.2rem);
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--emerald);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+    }
+    .hero h1 {
+      font-size: clamp(2.4rem, 5.4vw, 4.15rem);
       font-weight: 800;
-      line-height: 1.15;
-      letter-spacing: -0.03em;
+      line-height: 1.07;
+      letter-spacing: -0.04em;
+      max-width: 880px;
+      margin: 0 auto 1.25rem;
+      color: #ffffff;
     }
-    .gradient-text {
-      background: linear-gradient(135deg, #60a5fa 0%, #a855f7 100%);
+    .hero h1 span {
+      background: linear-gradient(180deg, #e5e7eb 10%, #93c5fd 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    .hero p {
-      font-size: 1.2rem;
-      color: var(--text-muted);
-      max-width: 720px;
-    }
-    .hero-actions {
-      display: flex;
-      gap: 1rem;
-      margin-top: 1rem;
-      flex-wrap: wrap;
-      justify-content: center;
+    .hero-sub {
+      font-size: 1.125rem;
+      color: var(--text-secondary);
+      max-width: 680px;
+      margin: 0 auto 2rem;
+      line-height: 1.6;
     }
 
-    /* Terminal Quickstart */
-    .terminal-box {
-      background: #00040a;
-      border: 1px solid var(--border);
+    /* CLI Quickstart Pill Bar */
+    .cli-shell {
+      max-width: 580px;
+      margin: 0 auto 1.25rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
       border-radius: 12px;
-      padding: 1.25rem 1.75rem;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 16px 40px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+      text-align: left;
+    }
+    .cli-tabs {
       display: flex;
       align-items: center;
-      gap: 1.25rem;
-      font-family: var(--font-mono);
-      font-size: 0.95rem;
-      color: #38bdf8;
-      margin-top: 1.5rem;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      justify-content: space-between;
+      padding: 0.45rem 0.75rem;
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--border);
     }
-    .copy-btn {
-      background: #1e293b;
+    .cli-tab-group {
+      display: flex;
+      gap: 0.25rem;
+    }
+    .cli-tab {
+      background: transparent;
       border: none;
-      color: #94a3b8;
-      padding: 0.35rem 0.75rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.28rem 0.6rem;
       border-radius: 6px;
       cursor: pointer;
-      font-size: 0.8rem;
+      transition: all 0.15s;
     }
-    .copy-btn:hover { color: white; background: #334155; }
-
-    /* Pain & Feature Section */
-    .section {
-      max-width: 1200px;
-      margin: 6rem auto;
-      padding: 0 2rem;
+    .cli-tab.active {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
     }
-    .section-title {
-      text-align: center;
-      margin-bottom: 3.5rem;
+    .cli-meta {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--emerald);
     }
-    .section-title h2 {
-      font-size: 2.2rem;
-      font-weight: 800;
-      letter-spacing: -0.02em;
+    .cli-body {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.85rem 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: #e5e7eb;
     }
-    .section-title p {
+    .cli-prompt {
       color: var(--text-muted);
-      margin-top: 0.5rem;
+      user-select: none;
+      margin-right: 0.4rem;
+    }
+    .cli-copy {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.3rem 0.65rem;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .cli-copy:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #ffffff;
     }
 
-    .grid-3 {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 1.5rem;
+    /* Inline Hero Waitlist / Actions */
+    .hero-waitlist {
+      max-width: 520px;
+      margin: 0 auto 1.25rem;
     }
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
+    #waitlist-form {
+      display: flex;
+      gap: 0.4rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      padding: 0.35rem;
+      border-radius: 10px;
+      transition: border-color 0.15s;
+    }
+    #waitlist-form:focus-within {
+      border-color: rgba(96, 165, 250, 0.6);
+    }
+    #waitlist-email {
+      flex: 1;
+      min-width: 0;
+      background: transparent;
+      border: none;
+      padding: 0.5rem 0.75rem;
+      color: var(--text);
+      font-size: 0.88rem;
+      outline: none;
+      font-family: var(--font-sans);
+    }
+    #waitlist-email::placeholder { color: var(--text-muted); }
+    #waitlist-msg {
+      display: none;
+      margin-top: 0.75rem;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.28);
+      padding: 0.9rem 1rem;
+      border-radius: 10px;
+      text-align: left;
+      font-size: 0.84rem;
+    }
+    .hero-cta-row {
+      display: flex;
+      justify-content: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 3.25rem;
+    }
+
+    /* Interactive Trace Showcase Window */
+    .trace-window {
+      max-width: 1040px;
+      margin: 0 auto;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
       border-radius: 16px;
-      padding: 2rem;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 32px 70px rgba(0, 0, 0, 0.7);
+      overflow: hidden;
+      text-align: left;
+    }
+    .trace-chrome {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      padding: 0.75rem 1.15rem;
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--border);
+    }
+    .chrome-dots {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.14); }
+    .chrome-title {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      color: var(--text-muted);
+      margin-left: 0.5rem;
+    }
+    .scenario-tabs {
+      display: flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+    .scenario-btn {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      padding: 0.3rem 0.65rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .scenario-btn.active {
+      background: rgba(59, 130, 246, 0.14);
+      border-color: rgba(96, 165, 250, 0.45);
+      color: #ffffff;
+    }
+
+    .trace-pipeline {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-bottom: 1px solid var(--border);
+    }
+    .pipe-step {
+      padding: 1.25rem 1.35rem;
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
+      gap: 0.45rem;
+    }
+    .pipe-step:last-child { border-right: none; }
+    .pipe-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+    .pipe-badge {
+      padding: 0.12rem 0.45rem;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 0.68rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .badge-ok { background: rgba(16, 185, 129, 0.14); color: var(--emerald); }
+    .badge-err { background: rgba(239, 68, 68, 0.14); color: #f87171; }
+    .badge-retry { background: rgba(245, 158, 11, 0.14); color: #fbbf24; }
+    .pipe-title {
+      font-weight: 700;
+      font-size: 0.94rem;
+      color: var(--text);
+    }
+    .pipe-desc {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
+
+    .trace-diff {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      background: var(--bg-code);
+    }
+    .trace-pane {
+      padding: 1.1rem 1.35rem;
+      border-right: 1px solid var(--border);
+      overflow-x: auto;
+    }
+    .trace-pane:last-child { border-right: none; }
+    .pane-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 0.65rem;
+      display: flex;
+      justify-content: space-between;
+    }
+    .hdr-line {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      line-height: 1.65;
+      color: #cbd5e1;
+      white-space: nowrap;
+    }
+    .hdr-key { color: #7dd3fc; }
+    .hdr-fresh { color: #34d399; }
+    .hdr-muted { color: #6b7280; }
+
+    /* Protocol Strip */
+    .protocol-strip {
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.015);
+      padding: 1.35rem 1.5rem;
+    }
+    .protocol-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
       gap: 1rem;
     }
-    .card-icon {
-      width: 48px;
-      height: 48px;
-      border-radius: 12px;
+    .protocol-label {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }
+    .protocol-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+    }
+    .proto-pill {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      padding: 0.28rem 0.7rem;
+      border-radius: 6px;
+    }
+
+    /* Sections */
+    .section {
+      padding: 5.5rem 0;
+    }
+    .section-head {
+      max-width: 680px;
+      margin: 0 auto 3.25rem;
+      text-align: center;
+    }
+    .section-kicker {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--blue-bright);
+      margin-bottom: 0.65rem;
+      display: block;
+    }
+    .section-head h2 {
+      font-size: clamp(1.85rem, 3.2vw, 2.55rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      color: #ffffff;
+      margin-bottom: 0.75rem;
+    }
+    .section-head p {
+      color: var(--text-secondary);
+      font-size: 1rem;
+    }
+
+    /* Architecture SVG Frame */
+    .arch-frame {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+      margin-bottom: 2.5rem;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      overflow-x: auto;
+    }
+    .arch-svg {
+      width: 100%;
+      min-width: 760px;
+      height: auto;
+      display: block;
+    }
+
+    /* Bento Feature Grid */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+    }
+    .feature-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.65rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      transition: border-color 0.16s, background 0.16s;
+    }
+    .feature-card:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-surface);
+    }
+    .feature-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 1.5rem;
+      color: var(--blue-bright);
     }
-    .card h3 {
-      font-size: 1.2rem;
+    .feature-card h3 {
+      font-size: 1.05rem;
       font-weight: 700;
+      letter-spacing: -0.015em;
+      color: #ffffff;
     }
-    .card p {
-      color: var(--text-muted);
-      font-size: 0.95rem;
+    .feature-card p {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+    .feature-card code {
+      font-size: 0.8em;
+      color: #e2e8f0;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
     }
 
+    /* Drop-in Code Panel */
+    .code-showcase {
+      display: grid;
+      grid-template-columns: 1fr 1.35fr;
+      gap: 2rem;
+      align-items: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 2rem;
+    }
+    .code-copy h3 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.75rem;
+      color: #ffffff;
+    }
+    .code-copy p {
+      color: var(--text-secondary);
+      font-size: 0.94rem;
+      margin-bottom: 1.25rem;
+    }
+    .mode-pills {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .mode-pill {
+      text-align: left;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      color: var(--text);
+    }
+    .mode-pill.active {
+      background: rgba(59, 130, 246, 0.1);
+      border-color: rgba(96, 165, 250, 0.45);
+    }
+    .mode-pill strong {
+      display: block;
+      font-size: 0.88rem;
+      margin-bottom: 0.15rem;
+    }
+    .mode-pill span {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    .code-box {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .code-box-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.55rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      color: var(--text-muted);
+    }
+    .code-box pre {
+      padding: 1.15rem;
+      font-size: 0.8rem;
+      line-height: 1.65;
+      color: #e2e8f0;
+      overflow-x: auto;
+    }
+    .tok-com { color: #6b7280; }
+    .tok-kw { color: #93c5fd; }
+    .tok-str { color: #34d399; }
+    .tok-fn { color: #fde68a; }
+
     /* Comparison Table */
+    .table-wrap {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow-x: auto;
+    }
     .comparison-table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 2rem;
       font-size: 0.9rem;
+      min-width: 680px;
     }
     .comparison-table th, .comparison-table td {
       padding: 1rem 1.25rem;
       border-bottom: 1px solid var(--border);
       text-align: left;
     }
+    .comparison-table tr:last-child td { border-bottom: none; }
     .comparison-table th {
-      background: #090e1a;
+      background: rgba(255, 255, 255, 0.02);
       color: var(--text-muted);
-      font-weight: 700;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
+    .comparison-table th.col-ha { color: var(--blue-bright); }
+    .comparison-table td:first-child { font-weight: 600; color: #ffffff; }
+    .comparison-table td.col-ha { color: #d1fae5; font-weight: 500; }
+    .comparison-table td { color: var(--text-secondary); }
 
-    /* Pricing Section */
-    .pricing-grid {
+    /* Editions / Deployment Cards */
+    .editions-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      grid-template-columns: repeat(2, 1fr);
       gap: 1.5rem;
-      margin-top: 3rem;
+      max-width: 960px;
+      margin: 0 auto;
     }
-    .pricing-card {
-      background: var(--bg-card);
+    .edition-card {
+      background: var(--bg-elevated);
       border: 1px solid var(--border);
-      border-radius: 16px;
+      border-radius: var(--radius-lg);
       padding: 2rem;
       display: flex;
       flex-direction: column;
       gap: 1.25rem;
-      position: relative;
     }
-    .pricing-card.featured {
-      border-color: var(--accent);
-      box-shadow: 0 0 30px rgba(59, 130, 246, 0.2);
+    .edition-card.featured {
+      border-color: rgba(96, 165, 250, 0.45);
+      box-shadow: inset 0 1px 0 rgba(96, 165, 250, 0.2), 0 16px 48px rgba(0, 0, 0, 0.45);
     }
-    .featured-badge {
-      position: absolute;
-      top: -12px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: #2563eb;
-      color: white;
-      padding: 0.2rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 700;
+    .edition-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
-    .price {
-      font-size: 2.5rem;
+    .edition-tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .edition-card.featured .edition-tag {
+      background: rgba(59, 130, 246, 0.14);
+      color: var(--blue-bright);
+      border-color: rgba(96, 165, 250, 0.35);
+    }
+    .price-val {
+      font-size: 2.35rem;
       font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #ffffff;
     }
-    .price span {
-      font-size: 1rem;
-      color: var(--text-muted);
+    .price-val span {
+      font-size: 0.95rem;
       font-weight: 500;
+      color: var(--text-muted);
     }
-    .feature-list {
+    .check-list {
       list-style: none;
       display: flex;
       flex-direction: column;
-      gap: 0.6rem;
+      gap: 0.65rem;
       font-size: 0.9rem;
+      color: var(--text-secondary);
     }
-    .feature-list li {
+    .check-list li {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      color: #cbd5e1;
+      align-items: flex-start;
+      gap: 0.6rem;
+    }
+    .check-icon {
+      color: var(--emerald);
+      flex-shrink: 0;
+      margin-top: 0.2rem;
     }
 
+    /* Engineering Blog Strip */
+    .notes-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.25rem;
+    }
+    .note-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+      text-decoration: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      transition: border-color 0.16s, transform 0.16s;
+    }
+    .note-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+    }
+    .note-tag {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--blue-bright);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .note-card h3 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #ffffff;
+      line-height: 1.35;
+    }
+    .note-card p {
+      font-size: 0.87rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    /* Footer */
     footer {
       border-top: 1px solid var(--border);
-      padding: 3rem 2rem;
-      text-align: center;
-      color: var(--text-muted);
+      padding: 2.75rem 1.5rem;
+      background: rgba(255, 255, 255, 0.01);
+    }
+    .footer-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
       font-size: 0.85rem;
-      margin-top: 6rem;
+      color: var(--text-muted);
+    }
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+    .footer-links a {
+      text-decoration: none;
+      color: var(--text-secondary);
+      transition: color 0.15s;
+    }
+    .footer-links a:hover { color: #ffffff; }
+
+    /* Responsive */
+    @media (max-width: 960px) {
+      .grid-3 { grid-template-columns: repeat(2, 1fr); }
+      .trace-pipeline { grid-template-columns: 1fr; }
+      .pipe-step { border-right: none; border-bottom: 1px solid var(--border); }
+      .pipe-step:last-child { border-bottom: none; }
+      .trace-diff { grid-template-columns: 1fr; }
+      .trace-pane { border-right: none; border-bottom: 1px solid var(--border); }
+      .trace-pane:last-child { border-bottom: none; }
+      .code-showcase { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .nav-links { display: none; }
+      .grid-3, .editions-grid, .notes-grid { grid-template-columns: 1fr; }
+      #waitlist-form { flex-direction: column; }
+      .hero { padding: 3.25rem 0 2.5rem; }
+      .section { padding: 3.75rem 0; }
     }
   </style>
 </head>
 <body>
 
-  <nav>
-    <a href="#" class="logo">
-      <span>🛡️</span> HookArmor <span class="badge-v1">v1.4.6 Live</span>
-    </a>
-    <div class="nav-cta">
-      <a href="/blog" class="btn btn-outline">Blog</a>
-      <a href="/dashboard" class="btn btn-outline">Live Demo</a>
-      <a href="#pricing" class="btn btn-outline">Pricing</a>
-      <a href="https://github.com/pkdoddamani/hookarmor" class="btn btn-primary" target="_blank">Star on GitHub ⭐</a>
-    </div>
-  </nav>
+  <!-- Navigation -->
+  <div class="topbar">
+    <nav>
+      <a href="/" class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+        </span>
+        HookArmor
+        <span class="version-chip">v1.4.6</span>
+      </a>
 
-  <header class="hero">
-    <div class="pill">⚡ v1.4.6 Live: Hardened IPv6 SSRF Guard, Header Secret Protection &amp; 5k-Batch Replay</div>
-    <h1>Never Lose a <span class="gradient-text">Stripe or Shopify</span> Webhook Again.</h1>
-    <p>
-      Zero-downtime deploys and serverless cold starts silently drop webhooks. Stripe retries days later. HookArmor acts as your zero-loss Dead-Letter Queue (DLQ), sub-10ms ingress buffer, and 1-click replay engine.
-    </p>
+      <div class="nav-links">
+        <a href="#architecture">Architecture</a>
+        <a href="#integration">Integration</a>
+        <a href="#compare">Compare</a>
+        <a href="/blog">Engineering Blog</a>
+        <a href="/dashboard">Dashboard</a>
+      </div>
 
-    <!-- Waitlist Capture Form -->
-    <div style="margin-top: 1.5rem; width: 100%; max-width: 480px;">
-      <form id="waitlist-form" onsubmit="handleWaitlist(event)" style="display: flex; gap: 0.5rem; background: #0d1322; border: 1px solid var(--border); padding: 0.4rem; border-radius: 10px;">
-        <input type="email" id="waitlist-email" placeholder="Enter your work email for Cloud Beta..." required style="flex: 1; background: transparent; border: none; padding: 0.6rem 0.8rem; color: white; outline: none; font-size: 0.9rem;">
-        <button type="submit" class="btn btn-primary" style="padding: 0.6rem 1.2rem; font-size: 0.85rem;">Join Cloud Beta</button>
-      </form>
-      <div id="waitlist-msg" style="font-size: 0.85rem; margin-top: 0.75rem; display: none; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); padding: 1rem; border-radius: 10px; text-align: left;">
-        <div style="font-weight: 700; color: #10b981; font-size: 0.95rem; margin-bottom: 0.35rem;">🎉 You're on the HookArmor Cloud Beta waitlist!</div>
-        <p style="color: #94a3b8; font-size: 0.82rem; margin-bottom: 0.75rem; line-height: 1.5;">
-          Your invite has been recorded. While your cloud cluster is being queued, jump straight into the live interactive demo to test 1-click dead-letter replays right now.
-        </p>
-        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
-          <a href="/dashboard" class="btn btn-primary" style="padding: 0.45rem 0.9rem; font-size: 0.8rem;">🚀 Launch Live Demo Now</a>
-          <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" class="btn btn-outline" style="padding: 0.45rem 0.9rem; font-size: 0.8rem;">⭐ Star on GitHub</a>
+      <div class="nav-actions">
+        <a href="/dashboard" class="btn btn-ghost">Live Demo</a>
+        <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener" class="btn btn-primary">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Hero Section -->
+  <div class="hero-backdrop">
+    <section class="hero container">
+      <div class="eyebrow">
+        <span class="status-dot" aria-hidden="true"></span>
+        MIT Open Source &middot; SQLite WAL Fsync &middot; Node 20+ &middot; Zero Brokers
+      </div>
+
+      <h1>
+        Zero-loss webhook delivery.<br>
+        <span>Built for Stripe &amp; Shopify spikes.</span>
+      </h1>
+
+      <p class="hero-sub">
+        Deploy reboots, serverless cold starts, and DB pool exhaustion silently drop revenue webhooks.
+        HookArmor buffers ingress in SQLite WAL under 10ms, absorbs failures for up to ~96 hours, and automatically re-signs stale signatures on replay.
+      </p>
+
+      <!-- Command Bar -->
+      <div class="cli-shell">
+        <div class="cli-tabs">
+          <div class="cli-tab-group">
+            <button type="button" class="cli-tab active" onclick="setCliTab('npx', this)">npx</button>
+            <button type="button" class="cli-tab" onclick="setCliTab('docker', this)">docker</button>
+            <button type="button" class="cli-tab" onclick="setCliTab('tunnel', this)">local tunnel</button>
+          </div>
+          <span class="cli-meta">npm v1.4.6 &middot; 119 tests passing</span>
+        </div>
+        <div class="cli-body">
+          <div><span class="cli-prompt">$</span><span id="cli-cmd-text">npx hookarmor start</span></div>
+          <button type="button" class="cli-copy" id="cli-copy-btn" onclick="copyCliCmd()">Copy</button>
         </div>
       </div>
+
+      <!-- Waitlist Signup -->
+      <div class="hero-waitlist">
+        <form id="waitlist-form" onsubmit="handleWaitlist(event)">
+          <input type="email" id="waitlist-email" placeholder="Work email for Hosted Cloud Beta updates..." required>
+          <button type="submit" class="btn btn-accent">Request Beta Access</button>
+        </form>
+        <div id="waitlist-msg">
+          <div style="font-weight: 700; color: #10b981; margin-bottom: 0.3rem;">Added to HookArmor Cloud Beta</div>
+          <p style="color: #9ca3af; margin-bottom: 0.65rem;">Your address is queued. Want to run HookArmor right now? Launch locally in one command or inspect the codebase on GitHub.</p>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener" class="btn btn-primary" style="padding: 0.4rem 0.85rem; font-size: 0.8rem;">View Repository</a>
+            <a href="/dashboard" class="btn btn-ghost" style="padding: 0.4rem 0.85rem; font-size: 0.8rem;">Open Dashboard</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-cta-row">
+        <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener" class="btn btn-primary">Download Free on GitHub</a>
+        <a href="#architecture" class="btn btn-ghost">Explore Architecture</a>
+      </div>
+
+      <!-- Interactive Webhook Lifecycle Inspector -->
+      <div class="trace-window" aria-label="Interactive webhook replay lifecycle preview">
+        <div class="trace-chrome">
+          <div class="chrome-dots">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="chrome-title">hookarmor-trace &middot; POST /in/stripe-billing</span>
+          </div>
+          <div class="scenario-tabs">
+            <button type="button" class="scenario-btn active" onclick="setScenario('deploy', this)">502 Deploy Reboot</button>
+            <button type="button" class="scenario-btn" onclick="setScenario('timeout', this)">504 DB Timeout</button>
+            <button type="button" class="scenario-btn" onclick="setScenario('resign', this)">300s Replay Trap</button>
+          </div>
+        </div>
+
+        <div class="trace-pipeline" id="trace-pipeline"></div>
+
+        <div class="trace-diff">
+          <div class="trace-pane">
+            <div class="pane-label">
+              <span>Captured Inbound Request</span>
+              <span id="trace-in-badge" style="color: #9ca3af;">Stored Bytes + Original Sig</span>
+            </div>
+            <div id="trace-in-headers"></div>
+          </div>
+          <div class="trace-pane">
+            <div class="pane-label">
+              <span>Re-Signed Outbound Replay</span>
+              <span id="trace-out-badge" style="color: #10b981;">Fresh HMAC · Zero Code Change</span>
+            </div>
+            <div id="trace-out-headers"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Protocol Strip -->
+  <div class="protocol-strip">
+    <div class="protocol-inner">
+      <span class="protocol-label">Verified Ingestion &amp; Re-Signing</span>
+      <div class="protocol-list">
+        <span class="proto-pill">Stripe-Signature</span>
+        <span class="proto-pill">Shopify HMAC</span>
+        <span class="proto-pill">Clerk / Svix</span>
+        <span class="proto-pill">GitHub SHA-256</span>
+        <span class="proto-pill">Razorpay HMAC</span>
+        <span class="proto-pill">Mode B Internal Sig</span>
+        <span class="proto-pill">Prometheus /metrics</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Architecture & Capabilities -->
+  <section class="section container" id="architecture">
+    <div class="section-head">
+      <span class="section-kicker">Architecture</span>
+      <h2>Single-node reliability without distributed queue sprawl</h2>
+      <p>No Kafka clusters, Redis brokers, or SQS dead-letter race conditions. One self-contained proxy backed by crash-safe SQLite WAL commits.</p>
     </div>
 
-    <div class="terminal-box" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; width: 100%; max-width: 520px;">
-      <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-        <span style="font-size: 0.75rem; color: #10b981; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-sans); font-weight: 700;">● Verified on npm (v1.4.6 Zero Config)</span>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText('npx hookarmor start')">Copy</button>
-      </div>
-      <div style="color: #38bdf8; font-size: 1.05rem; font-weight: 600;">
-        $ npx hookarmor start
-      </div>
+    <!-- Custom Inline SVG Architecture Diagram -->
+    <div class="arch-frame">
+      <svg class="arch-svg" viewBox="0 0 960 270" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HookArmor Webhook Flow Diagram">
+        <!-- Providers Box -->
+        <rect x="16" y="42" width="168" height="104" rx="10" fill="#0e131d" stroke="rgba(255,255,255,0.14)"/>
+        <text x="34" y="72" fill="#9ca3af" font-family="ui-monospace, monospace" font-size="11">EXTERNAL PROVIDERS</text>
+        <text x="34" y="96" fill="#f3f4f6" font-family="system-ui, sans-serif" font-size="14" font-weight="700">Stripe &middot; Shopify</text>
+        <text x="34" y="116" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="12">Clerk / GitHub / Razorpay</text>
+        <text x="34" y="134" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="11">POST /in/:endpointId</text>
+
+        <!-- Arrow 1 -->
+        <path d="M184 94 H238" stroke="#3b82f6" stroke-width="2" stroke-dasharray="4 3"/>
+        <polygon points="238,89 248,94 238,99" fill="#3b82f6"/>
+
+        <!-- HookArmor Ingress Box -->
+        <rect x="248" y="30" width="236" height="128" rx="12" fill="#0e131d" stroke="rgba(59,130,246,0.45)"/>
+        <text x="266" y="56" fill="#60a5fa" font-family="ui-monospace, monospace" font-size="11" font-weight="700">HOOKARMOR INGRESS EDGE</text>
+        <text x="266" y="80" fill="#f3f4f6" font-family="system-ui, sans-serif" font-size="14" font-weight="700">Verify HMAC + WAL Fsync</text>
+        <text x="266" y="101" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="12">AES-256-GCM secrets &amp; body at rest</text>
+        <text x="266" y="120" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="12">Idempotency + body-hash dedupe</text>
+        <rect x="266" y="130" width="166" height="20" rx="5" fill="rgba(16,185,129,0.14)"/>
+        <text x="274" y="144" fill="#10b981" font-family="ui-monospace, monospace" font-size="11" font-weight="600">200 OK ACK (&lt;10ms)</text>
+
+        <!-- Arrow 2 -->
+        <path d="M484 94 H544" stroke="#10b981" stroke-width="2"/>
+        <polygon points="544,89 554,94 544,99" fill="#10b981"/>
+
+        <!-- Relay / Limiter Box -->
+        <rect x="554" y="30" width="196" height="128" rx="12" fill="#0e131d" stroke="rgba(255,255,255,0.14)"/>
+        <text x="572" y="56" fill="#9ca3af" font-family="ui-monospace, monospace" font-size="11">RELAY &amp; GUARD</text>
+        <text x="572" y="80" fill="#f3f4f6" font-family="system-ui, sans-serif" font-size="14" font-weight="700">Re-Sign &amp; Pool</text>
+        <text x="572" y="101" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="12">HTTP Keep-Alive sockets</text>
+        <text x="572" y="120" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="12">IPv4/IPv6 SSRF + DNS guard</text>
+        <text x="572" y="139" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="11">Fresh t=now HMAC header</text>
+
+        <!-- Arrow 3 -->
+        <path d="M750 94 H798" stroke="#10b981" stroke-width="2"/>
+        <polygon points="798,89 808,94 798,99" fill="#10b981"/>
+
+        <!-- Target App -->
+        <rect x="808" y="42" width="136" height="104" rx="10" fill="#0e131d" stroke="rgba(16,185,129,0.35)"/>
+        <text x="824" y="72" fill="#10b981" font-family="ui-monospace, monospace" font-size="11">YOUR BACKEND</text>
+        <text x="824" y="96" fill="#f3f4f6" font-family="system-ui, sans-serif" font-size="14" font-weight="700">App Handler</text>
+        <text x="824" y="116" fill="#9ca3af" font-family="system-ui, sans-serif" font-size="12">Zero code changes</text>
+        <text x="824" y="134" fill="#9ca3af" font-family="ui-monospace, monospace" font-size="11">/api/webhooks</text>
+
+        <!-- Failure Loop to DLQ -->
+        <path d="M876 146 V196 Q876 212 860 212 H740" stroke="#ef4444" stroke-width="1.75" stroke-dasharray="4 3"/>
+        <polygon points="740,207 730,212 740,217" fill="#ef4444"/>
+        <text x="760" y="203" fill="#f87171" font-family="ui-monospace, monospace" font-size="11">5xx / 429 / Timeout</text>
+
+        <!-- DLQ Box -->
+        <rect x="248" y="182" width="482" height="68" rx="10" fill="#0b0f17" stroke="rgba(245,158,11,0.38)"/>
+        <text x="268" y="208" fill="#fbbf24" font-family="ui-monospace, monospace" font-size="11" font-weight="700">DEAD-LETTER QUEUE &amp; RETRY WORKER</text>
+        <text x="268" y="230" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="12">10-attempt schedule (~96h) &middot; Sentinel alerts &middot; 1-click UI &amp; CLI bulk replay (up to 5k/batch)</text>
+
+        <!-- Retry loop back up -->
+        <path d="M248 216 H212 Q196 216 196 200 V132 H238" stroke="#f59e0b" stroke-width="1.75"/>
+        <polygon points="238,127 248,132 238,137" fill="#f59e0b"/>
+      </svg>
     </div>
 
-    <div class="hero-actions">
-      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" class="btn btn-primary">Download Free on GitHub</a>
-      <a href="#features" class="btn btn-outline">How HookArmor Works</a>
+    <div class="grid-3">
+      <div class="feature-card">
+        <div class="feature-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+        <h3>Keep-Alive Ingress (&lt;10ms)</h3>
+        <p>Returns an instant <code>200 OK</code> once durable WAL <code>synchronous=FULL</code> fsync succeeds, while pooling persistent HTTP/HTTPS sockets downstream.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="color: #fbbf24;" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <h3>~96h Delivery Budget (10 Attempts)</h3>
+        <p>Outlasts Stripe's 3-day retry schedule with jittered backoff (<code>30s</code> to <code>48h</code>), plus instant local startup crash recovery and claim leases.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="color: #10b981;" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </div>
+        <h3>Expiration-Defeating Re-Signing</h3>
+        <p>Re-signs outbound Stripe and Svix timestamps at <code>t=now</code> and supports up to <code>5,000</code>-event CLI or UI replays with forensic provenance headers.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="color: #c084fc;" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>AES-256-GCM &amp; Compliance Mode</h3>
+        <p>Encrypts signing secrets, headers, and bodies at rest. Enable <code>HOOKARMOR_REQUIRE_SECRETS</code> to forbid unverified endpoints plus full IPv4/IPv6 SSRF blocking.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="color: #f87171;" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </div>
+        <h3>Sentinel &amp; Rejection Alerts</h3>
+        <p>Tracks failing streaks and ingress rejections (rotated secrets or scheme mismatches) with throttled Slack/Discord webhooks and Prometheus <code>/metrics</code>.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="color: #38bdf8;" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <h3>Online Backups &amp; Dev Tunneling</h3>
+        <p>Stream zero-downtime SQLite snapshots with <code>hookarmor backup</code> or tunnel live signed payloads straight into <code>localhost:3000</code> in one terminal command.</p>
+      </div>
     </div>
-  </header>
+  </section>
+
+  <!-- Code Integration Showcase -->
+  <section class="section container" id="integration" style="padding-top: 1rem;">
+    <div class="code-showcase">
+      <div class="code-copy">
+        <span class="section-kicker">Integration</span>
+        <h3>Drop-in compatibility or isolated internal verification</h3>
+        <p>Choose transparent re-signing to leave existing Stripe handlers untouched, or isolate external provider secrets completely at the HookArmor edge.</p>
+
+        <div class="mode-pills">
+          <button type="button" class="mode-pill active" onclick="setCodeMode('modeA', this)">
+            <strong>Mode A &middot; Transparent Proxy (Default)</strong>
+            <span>HookArmor re-signs outbound payloads with fresh t=now timestamps. Zero SDK rewrite required.</span>
+          </button>
+          <button type="button" class="mode-pill" onclick="setCodeMode('modeB', this)">
+            <strong>Mode B &middot; Isolated Trust Boundary</strong>
+            <span>Downstream handlers verify x-hookarmor-signature using HOOKARMOR_SIGNING_SECRET only.</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="code-box">
+        <div class="code-box-head">
+          <span id="code-filename">routes/webhooks.js</span>
+          <button type="button" class="cli-copy" id="code-copy-btn" onclick="copyCodeSnippet()">Copy</button>
+        </div>
+        <pre id="code-snippet"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architectural Comparison -->
+  <section class="section container" id="compare">
+    <div class="section-head">
+      <span class="section-kicker">Tradeoffs &amp; Fit</span>
+      <h2>Designed against the alternatives</h2>
+      <p>Keep full custody of customer payment payloads in a single &lt;50MB container without paying per-event SaaS markups.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th class="col-ha">HookArmor (Self-Hosted)</th>
+            <th>DIY SQS + Lambda + DB</th>
+            <th>Hosted Webhook SaaS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Infrastructure Footprint</td>
+            <td class="col-ha">Single Node.js process + SQLite WAL</td>
+            <td>SQS, DLQ, workers, Postgres/Redis</td>
+            <td>External third-party cloud</td>
+          </tr>
+          <tr>
+            <td>Monthly Event Cost</td>
+            <td class="col-ha">$0 unlimited (MIT License)</td>
+            <td>AWS request + NAT + DB bills</td>
+            <td>$40 &ndash; $300+/mo usage tiers</td>
+          </tr>
+          <tr>
+            <td>300s Replay Signature Trap</td>
+            <td class="col-ha">Automatic fresh t=now re-signing</td>
+            <td>Manual signature middleware</td>
+            <td>Limited / manual headers</td>
+          </tr>
+          <tr>
+            <td>Data Residency &amp; Secrets</td>
+            <td class="col-ha">AES-256-GCM at rest on your disk</td>
+            <td>Requires KMS + custom wiring</td>
+            <td>Third-party multi-tenant storage</td>
+          </tr>
+          <tr>
+            <td>Bulk CLI Replay &amp; Preview</td>
+            <td class="col-ha">hookarmor replay --failed --dry-run</td>
+            <td>Ad-hoc scripts</td>
+            <td>UI / proprietary API</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Editions & Deployment -->
+  <section class="section container" id="pricing" style="padding-top: 1.5rem;">
+    <div class="section-head">
+      <span class="section-kicker">Deployment</span>
+      <h2>Run open source forever, or join Cloud Beta</h2>
+      <p>Every security fix, replay control, and encryption primitive ships directly in the open-source MIT core.</p>
+    </div>
+
+    <div class="editions-grid">
+      <div class="edition-card featured">
+        <div class="edition-top">
+          <h3 style="font-size: 1.25rem; font-weight: 700;">Open Source Core</h3>
+          <span class="edition-tag">MIT LICENSED</span>
+        </div>
+        <div class="price-val">$0 <span>/ forever</span></div>
+        <p style="font-size: 0.9rem; color: var(--text-secondary);">Run locally with <code>npx hookarmor start</code>, inside Docker Compose, or deploy your private instance to Render.</p>
+        <ul class="check-list">
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Unlimited endpoints, events, and 5,000-event bulk replays
+          </li>
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            AES-256-GCM at-rest secrets &amp; payload encryption
+          </li>
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            10-attempt (~96h) automatic backoff + fresh HMAC re-signing
+          </li>
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Prometheus <code>/metrics</code>, Slack/Discord Sentinel &amp; CLI hot backup
+          </li>
+        </ul>
+        <div style="display: flex; gap: 0.65rem; flex-wrap: wrap; margin-top: auto; padding-top: 0.5rem;">
+          <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener" class="btn btn-primary" style="flex: 1;">Get Started on GitHub</a>
+          <a href="https://render.com/deploy?repo=https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener" class="btn btn-ghost">Deploy to Render</a>
+        </div>
+      </div>
+
+      <div class="edition-card">
+        <div class="edition-top">
+          <h3 style="font-size: 1.25rem; font-weight: 700;">Managed Cloud Beta</h3>
+          <span class="edition-tag">EARLY ACCESS</span>
+        </div>
+        <div class="price-val">Waitlist <span>/ managed cluster</span></div>
+        <p style="font-size: 0.9rem; color: var(--text-secondary);">Managed multi-region ingress with persistent snapshots and zero server maintenance—designed for small B2B teams.</p>
+        <ul class="check-list">
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Persistent replicated storage with zero cold starts
+          </li>
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Team RBAC, audit logs, and custom retention policies
+          </li>
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Direct Slack, Discord &amp; PagerDuty failure escalation
+          </li>
+          <li>
+            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Zero-effort drop-in URL swap from self-hosted HookArmor
+          </li>
+        </ul>
+        <button type="button" onclick="focusWaitlist();" class="btn btn-accent" style="margin-top: auto;">Join Early Access Waitlist</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Engineering Blog Highlights -->
+  <section class="section container" style="padding-top: 1rem;">
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.75rem;">
+      <div>
+        <span class="section-kicker">Engineering Notes</span>
+        <h2 style="font-size: 1.65rem; font-weight: 800; letter-spacing: -0.025em; color: #ffffff;">Deep dives on webhook mechanics</h2>
+      </div>
+      <a href="/blog" class="btn btn-ghost" style="font-size: 0.82rem;">All 4 Articles &rarr;</a>
+    </div>
+
+    <div class="notes-grid">
+      <a href="/blog/stripe-webhook-signature-verification-failed" class="note-card">
+        <span class="note-tag">Security &amp; Cryptography</span>
+        <h3>Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)</h3>
+        <p>Why <code>stripe.webhooks.constructEvent()</code> rejects legitimate replays older than 300 seconds and how HookArmor preserves provenance while restoring verification.</p>
+      </a>
+      <a href="/blog/sqs-webhook-deduplication-trap" class="note-card">
+        <span class="note-tag">Distributed Systems</span>
+        <h3>The SQS Deduplication Trap: Why Naive Queues Silently Drop Payment Retries</h3>
+        <p>How pre-commit idempotency locks interact with Lambda timeouts and database spikes to permanently discard paid events.</p>
+      </a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <div>&copy; 2026 HookArmor &middot; MIT Open Source &middot; v1.4.6</div>
+      <div class="footer-links">
+        <a href="/blog">Engineering Blog</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/pkdoddamani/hookarmor/releases/tag/v1.4.6" target="_blank" rel="noopener">Release Notes</a>
+        <a href="https://github.com/pkdoddamani/hookarmor/blob/main/SECURITY.md" target="_blank" rel="noopener">Security</a>
+      </div>
+    </div>
+  </footer>
 
   <script>
+    const CLI_COMMANDS = {
+      npx: 'npx hookarmor start',
+      docker: 'docker compose up -d',
+      tunnel: 'npx hookarmor listen http://localhost:3000/api/webhooks'
+    };
+
+    function setCliTab(mode, btn) {
+      document.querySelectorAll('.cli-tab').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('cli-cmd-text').textContent = CLI_COMMANDS[mode];
+    }
+
+    function copyCliCmd() {
+      const text = document.getElementById('cli-cmd-text').textContent;
+      navigator.clipboard.writeText(text);
+      const btn = document.getElementById('cli-copy-btn');
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+    }
+
+    const SCENARIOS = {
+      deploy: {
+        steps: [
+          { tag: '01 INGRESS EDGE', badge: '200 OK · 4.2ms', cls: 'badge-ok', title: 'Verified & WAL Fsynced', desc: 'HMAC checked at ingress. SQLite synchronous=FULL persisted before replying 200 OK to Stripe.' },
+          { tag: '02 DOWNSTREAM', badge: '502 BAD GATEWAY', cls: 'badge-err', title: 'Container Rebooting', desc: 'Zero-downtime deploy dropped upstream socket. Payload held safely in DLQ; Sentinel notified.' },
+          { tag: '03 AUTO RE-SIGN', badge: '200 OK · REPLAYED', cls: 'badge-ok', title: 'Recovered in +30s', desc: 'Backoff elapsed, fresh HMAC t=now computed, app processed invoice.paid with zero loss.' }
+        ],
+        inHeaders: [
+          ['POST', '/in/stripe-billing'],
+          ['stripe-signature', 't=1795590000,v1=9f8e7d6c... (stale after 300s)'],
+          ['content-type', 'application/json'],
+          ['x-hookarmor-status', 'stored (attempt 1 failed: HTTP 502)']
+        ],
+        outHeaders: [
+          ['POST', 'https://api.myapp.com/webhooks/stripe'],
+          ['stripe-signature', 't=1795591845,v1=3a4b5c6d... (re-signed fresh)'],
+          ['x-hookarmor-is-replay', 'true'],
+          ['x-hookarmor-attempt', '2'],
+          ['x-hookarmor-original-timestamp', '2026-11-25T09:10:00Z'],
+          ['x-hookarmor-original-stripe-signature', 't=1795590000,v1=9f8e7d6c...']
+        ]
+      },
+      timeout: {
+        steps: [
+          { tag: '01 INGRESS EDGE', badge: '200 OK · 5.8ms', cls: 'badge-ok', title: 'Burst Parked Safely', desc: '1,000+ webhook spike persisted in SQLite instead of exhausting downstream Postgres connections.' },
+          { tag: '02 CONCURRENCY', badge: '504 · SLOTS CAPPED', cls: 'badge-retry', title: 'Concurrency Pool Active', desc: 'Worker caps parallel outbound connections per endpoint and enforces a hard delivery deadline.' },
+          { tag: '03 BULK REPLAY', badge: '200 OK · BATCHED', cls: 'badge-ok', title: '96h Retry Budget', desc: 'Events drain cleanly across 10 exponential attempts or 5,000-ID CLI batch replays.' }
+        ],
+        inHeaders: [
+          ['POST', '/in/shopify-orders'],
+          ['x-shopify-topic', 'orders/create'],
+          ['x-shopify-hmac-sha256', 'dGVzdF9zaG9waWZ5X2htYWN...'],
+          ['x-hookarmor-body-hash', 'hmac_sha256_verified (dedupe active)']
+        ],
+        outHeaders: [
+          ['POST', 'https://app.mystore.io/hooks/shopify'],
+          ['x-shopify-topic', 'orders/create'],
+          ['x-shopify-hmac-sha256', 'dGVzdF9zaG9waWZ5X2htYWN... (verified)'],
+          ['x-hookarmor-is-replay', 'true'],
+          ['x-hookarmor-delivery-id', 'evt_1795591910_a41b9e']
+        ]
+      },
+      resign: {
+        steps: [
+          { tag: '01 DAY 0 CAPTURE', badge: '200 OK · QUARANTINED', cls: 'badge-ok', title: 'Captured Old Signature', desc: 'Original Stripe request stored verbatim with t=1795000000 while checkout service was offline.' },
+          { tag: '02 DAY 2 EXPIRY', badge: '300s LIMIT BYPASSED', cls: 'badge-retry', title: 'Stripe Tolerance Exceeded', desc: 'Raw Stripe timestamp expired 48 hours ago; direct replay would throw SignatureVerificationError.' },
+          { tag: '03 MODE A / MODE B', badge: '200 OK · VERIFIED', cls: 'badge-ok', title: 'SDK ConstructEvent Passes', desc: 'Outbound signature refreshed at replay time while preserving audit headers for order checks.' }
+        ],
+        inHeaders: [
+          ['stripe-signature', 't=1795000000,v1=71cc90e1... (expired 48h ago)'],
+          ['x-hookarmor-verified', '1 (verified at ingress before expiry)'],
+          ['status', 'failed -> queued for manual replay']
+        ],
+        outHeaders: [
+          ['stripe-signature', 't=1795172800,v1=c8e4419a... (t=now valid)'],
+          ['x-hookarmor-signature', 't=1795172800,v1=902be1... (Mode B)'],
+          ['x-hookarmor-is-replay', 'true'],
+          ['x-hookarmor-original-stripe-signature', 't=1795000000,v1=71cc90e1...']
+        ]
+      }
+    };
+
+    function renderScenario(key) {
+      const s = SCENARIOS[key];
+      document.getElementById('trace-pipeline').innerHTML = s.steps.map((st) => `
+        <div class="pipe-step">
+          <div class="pipe-top">
+            <span>${st.tag}</span>
+            <span class="pipe-badge ${st.cls}">${st.badge}</span>
+          </div>
+          <div class="pipe-title">${st.title}</div>
+          <div class="pipe-desc">${st.desc}</div>
+        </div>
+      `).join('');
+
+      document.getElementById('trace-in-headers').innerHTML = s.inHeaders.map(([k, v]) => `
+        <div class="hdr-line"><span class="hdr-key">${k}:</span> <span class="hdr-muted">${v}</span></div>
+      `).join('');
+
+      document.getElementById('trace-out-headers').innerHTML = s.outHeaders.map(([k, v]) => `
+        <div class="hdr-line"><span class="hdr-key">${k}:</span> <span class="${k.includes('signature') || k === 'x-hookarmor-is-replay' ? 'hdr-fresh' : ''}">${v}</span></div>
+      `).join('');
+    }
+
+    function setScenario(key, btn) {
+      document.querySelectorAll('.scenario-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderScenario(key);
+    }
+
+    const CODE_MODES = {
+      modeA: {
+        file: 'routes/stripe-webhook.js (Transparent Proxy)',
+        raw: `app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), (req, res) => {
+  // Standard Stripe verification always passes, even days later
+  const event = stripe.webhooks.constructEvent(
+    req.body,
+    req.headers['stripe-signature'],
+    process.env.STRIPE_WEBHOOK_SECRET
+  );
+
+  // Guard against out-of-order replays overwriting newer state
+  if (req.headers['x-hookarmor-is-replay'] === 'true') {
+    const arrivedAt = new Date(req.headers['x-hookarmor-original-timestamp']);
+    // Compare arrivedAt against your customer row's updated_at timestamp
+  }
+
+  res.json({ received: true });
+});`,
+        html: `<span class="tok-kw">app</span>.<span class="tok-fn">post</span>(<span class="tok-str">'/api/webhooks/stripe'</span>, express.<span class="tok-fn">raw</span>({ type: <span class="tok-str">'application/json'</span> }), (req, res) =&gt; {
+  <span class="tok-com">// Standard Stripe verification always passes, even days later</span>
+  <span class="tok-kw">const</span> event = stripe.webhooks.<span class="tok-fn">constructEvent</span>(
+    req.body,
+    req.headers[<span class="tok-str">'stripe-signature'</span>],
+    process.env.STRIPE_WEBHOOK_SECRET
+  );
+
+  <span class="tok-com">// Guard against out-of-order replays overwriting newer state</span>
+  <span class="tok-kw">if</span> (req.headers[<span class="tok-str">'x-hookarmor-is-replay'</span>] === <span class="tok-str">'true'</span>) {
+    <span class="tok-kw">const</span> arrivedAt = <span class="tok-kw">new</span> Date(req.headers[<span class="tok-str">'x-hookarmor-original-timestamp'</span>]);
+    <span class="tok-com">// Compare arrivedAt against your customer row's updated_at timestamp</span>
+  }
+
+  res.<span class="tok-fn">json</span>({ received: <span class="tok-kw">true</span> });
+});`
+      },
+      modeB: {
+        file: 'routes/internal-relay.js (Isolated Trust Boundary)',
+        raw: `// Only attach x-hookarmor-signature for events verified at HookArmor ingress
+function verifyHookArmor(req, signingSecret) {
+  const sig = req.headers['x-hookarmor-signature'] || '';
+  const { t, v1 } = Object.fromEntries(sig.split(',').map(p => p.split('=')));
+  const expected = crypto.createHmac('sha256', signingSecret)
+    .update(t + '.').update(req.body).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(v1));
+}`,
+        html: `<span class="tok-com">// Attached only for events cryptographically verified at ingress</span>
+<span class="tok-kw">function</span> <span class="tok-fn">verifyHookArmor</span>(req, signingSecret) {
+  <span class="tok-kw">const</span> sig = req.headers[<span class="tok-str">'x-hookarmor-signature'</span>] || <span class="tok-str">''</span>;
+  <span class="tok-kw">const</span> { t, v1 } = Object.<span class="tok-fn">fromEntries</span>(sig.<span class="tok-fn">split</span>(<span class="tok-str">','</span>).<span class="tok-fn">map</span>(p =&gt; p.<span class="tok-fn">split</span>(<span class="tok-str">'='</span>)));
+  <span class="tok-kw">const</span> expected = crypto.<span class="tok-fn">createHmac</span>(<span class="tok-str">'sha256'</span>, signingSecret)
+    .<span class="tok-fn">update</span>(t + <span class="tok-str">'.'</span>).<span class="tok-fn">update</span>(req.body).<span class="tok-fn">digest</span>(<span class="tok-str">'hex'</span>);
+  <span class="tok-kw">return</span> crypto.<span class="tok-fn">timingSafeEqual</span>(Buffer.<span class="tok-fn">from</span>(expected), Buffer.<span class="tok-fn">from</span>(v1));
+}`
+      }
+    };
+
+    let currentCodeMode = 'modeA';
+
+    function setCodeMode(mode, btn) {
+      currentCodeMode = mode;
+      document.querySelectorAll('.mode-pill').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('code-filename').textContent = CODE_MODES[mode].file;
+      document.getElementById('code-snippet').innerHTML = CODE_MODES[mode].html;
+    }
+
+    function copyCodeSnippet() {
+      navigator.clipboard.writeText(CODE_MODES[currentCodeMode].raw);
+      const btn = document.getElementById('code-copy-btn');
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+    }
+
+    function focusWaitlist() {
+      const form = document.getElementById('waitlist-form');
+      const input = document.getElementById('waitlist-email');
+      if (form) form.style.display = 'flex';
+      if (input) {
+        input.focus();
+        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
     async function handleWaitlist(e) {
       e.preventDefault();
       const input = document.getElementById('waitlist-email');
@@ -398,166 +1595,20 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, source: 'hero_landing' })
         });
-        const data = await res.json();
+        if (!res.ok) throw new Error('Request failed');
         form.style.display = 'none';
         msg.style.display = 'block';
       } catch (err) {
         msg.style.display = 'block';
-        msg.style.background = 'rgba(244, 63, 94, 0.1)';
-        msg.style.borderColor = 'rgba(244, 63, 94, 0.3)';
-        msg.innerHTML = '<span style="color: #f43f5e;">⚠️ Could not join waitlist right now. Please try again.</span>';
+        msg.style.background = 'rgba(239, 68, 68, 0.1)';
+        msg.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+        msg.innerHTML = '<span style="color: #f87171;">Could not join waitlist right now. Please try again.</span>';
       }
     }
+
+    renderScenario('deploy');
+    document.getElementById('code-filename').textContent = CODE_MODES.modeA.file;
+    document.getElementById('code-snippet').innerHTML = CODE_MODES.modeA.html;
   </script>
-
-  <section class="section" id="features">
-    <div class="section-title">
-      <h2>Built for Developers Tired of Silent Revenue Loss</h2>
-      <p>A drop-in proxy that protects your business from the harsh realities of production infrastructure.</p>
-    </div>
-
-    <div class="grid-3">
-      <div class="card">
-        <div class="card-icon" style="background: rgba(59, 130, 246, 0.1); color: #60a5fa;">⚡</div>
-        <h3>Keep-Alive Ingress (&lt;10ms)</h3>
-        <p>
-          Returns an instant <code>200 OK</code> to Stripe, Shopify, or Clerk immediately with durable SQLite WAL sync. Reusable keep-alive pooling forwards downstream in sub-10ms.
-        </p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: rgba(244, 63, 94, 0.1); color: #f43f5e;">💀</div>
-        <h3>Burst-Proof SQLite DLQ (~96h Window)</h3>
-        <p>
-          Hardened with <code>PRAGMA busy_timeout = 5000</code>, WAL concurrency, and a 10-attempt retry budget (up to ~96 hours) that outlasts Stripe's 3-day retry schedule without dropping events.
-        </p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: rgba(16, 185, 129, 0.1); color: #34d399;">🔄</div>
-        <h3>1-Click Replay &amp; Resigning</h3>
-        <p>
-          Deploy your fix, then click <strong>"Replay All Dead-Letter"</strong> or use the CLI (up to 5,000-ID batches). Fresh HMAC timestamps and re-computed signatures defeat gateway expiration windows.
-        </p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: rgba(168, 85, 247, 0.1); color: #c084fc;">🔐</div>
-        <h3>AES-256-GCM &amp; SSRF Guard</h3>
-        <p>
-          At-rest AES-256-GCM encryption for secrets, headers, and bodies, plus <code>HOOKARMOR_REQUIRE_SECRETS</code> compliance mode and multi-layer IPv4/IPv6 SSRF protection.
-        </p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: rgba(245, 158, 11, 0.1); color: #fbbf24;">🚨</div>
-        <h3>Sentinel &amp; Rejection Alerts</h3>
-        <p>
-          Instant Slack/Discord alerts on destination failure streaks and ingress signature rejections (e.g., rotated secrets), plus Prometheus <code>/metrics</code> observability.
-        </p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: rgba(56, 189, 248, 0.1); color: #38bdf8;">💻</div>
-        <h3>Zero-Friction Local Tunnel</h3>
-        <p>
-          Run <code>npx hookarmor listen http://localhost:3000/api/webhook</code> to proxy and replay captured webhook events straight into your local server with automatic signature verification.
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="pricing">
-    <div class="section-title">
-      <h2>Simple, Predictable Developer Pricing</h2>
-      <p>No usage shock. No complex JSON configuration bills. Open core forever.</p>
-    </div>
-
-    <div class="pricing-grid">
-      <div class="pricing-card">
-        <h3>Self-Hosted</h3>
-        <div class="price">$0 <span>/ forever</span></div>
-        <p style="color: var(--text-muted); font-size: 0.85rem;">Open source engine & dashboard for local dev and self-hosting.</p>
-        <ul class="feature-list">
-          <li>✓ Full SQLite DLQ & Ingress Engine</li>
-          <li>✓ Web Dashboard & Inspector</li>
-          <li>✓ Terminal CLI runner</li>
-          <li>✓ Local Dev Tunneling</li>
-          <li>✓ Unlimited Self-Hosted Events</li>
-          <li>✓ MIT Licensed & Community Support</li>
-        </ul>
-        <a href="https://github.com/pkdoddamani/hookarmor" class="btn btn-outline" style="margin-top: auto;" target="_blank">Download on GitHub</a>
-      </div>
-
-      <div class="pricing-card">
-        <h3>Developer Cloud</h3>
-        <div class="price">$0 <span>/ month</span></div>
-        <p style="color: var(--text-muted); font-size: 0.85rem;">Zero-setup managed buffer for side projects and prototypes.</p>
-        <ul class="feature-list">
-          <li>✓ <strong>10,000 events / month</strong></li>
-          <li>✓ <strong>7-day retention</strong> in DLQ</li>
-          <li>✓ 2 Webhook Endpoints</li>
-          <li>✓ Instant Discord & Slack Alerts</li>
-          <li>✓ Automatic Exponential Retries</li>
-          <li>✓ 1-Click UI & API Replay</li>
-        </ul>
-        <a href="#waitlist-form" onclick="focusWaitlist();" class="btn btn-outline" style="margin-top: auto;">Join Free Waitlist</a>
-      </div>
-
-      <div class="pricing-card featured">
-        <div class="featured-badge">FOUNDER LOCK — $19/MO</div>
-        <h3>Starter Cloud</h3>
-        <div class="price">$19 <span>/ month</span></div>
-        <p style="color: var(--text-muted); font-size: 0.85rem;">For growing B2B SaaS apps and indie founders.</p>
-        <ul class="feature-list">
-          <li>✓ <strong>100,000 events / month</strong></li>
-          <li>✓ <strong>30-day retention</strong> in DLQ</li>
-          <li>✓ 10 Webhook Endpoints</li>
-          <li>✓ Instant Discord & Slack Alerts</li>
-          <li>✓ Automatic Exponential Retries</li>
-          <li>✓ 1-Click UI & API Replay</li>
-          <li>✓ <strong>Rate locked for life</strong> (First 50)</li>
-        </ul>
-        <a href="#waitlist-form" onclick="focusWaitlist();" class="btn btn-primary" style="margin-top: auto;">Lock In $19/mo</a>
-      </div>
-
-      <div class="pricing-card">
-        <h3>Scale Cloud</h3>
-        <div class="price">$79 <span>/ month</span></div>
-        <p style="color: var(--text-muted); font-size: 0.85rem;">For high-volume e-commerce and scale-ups.</p>
-        <ul class="feature-list">
-          <li>✓ <strong>500,000 events / month</strong></li>
-          <li>✓ <strong>90-day retention</strong> in DLQ</li>
-          <li>✓ Unlimited Endpoints</li>
-          <li>✓ Per-Endpoint Concurrency Limiting</li>
-          <li>✓ High-Concurrency Queue Worker</li>
-          <li>✓ Priority Outbound Bandwidth</li>
-        </ul>
-        <a href="#waitlist-form" onclick="focusWaitlist();" class="btn btn-outline" style="margin-top: auto;">Upgrade to Scale</a>
-      </div>
-    </div>
-  </section>
-
-  <script>
-    function focusWaitlist() {
-      const form = document.getElementById('waitlist-form');
-      const input = document.getElementById('waitlist-email');
-      if (form) form.style.display = 'flex';
-      if (input) {
-        input.focus();
-        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }
-  </script>
-
-  <footer>
-    <div style="max-width: 600px; margin: 0 auto 1.5rem; display: flex; justify-content: center; gap: 2rem;">
-      <a href="/blog" style="color: #94a3b8; text-decoration: none;">Engineering Blog</a>
-      <a href="/dashboard" style="color: #94a3b8; text-decoration: none;">Live Demo Dashboard</a>
-      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" style="color: #94a3b8; text-decoration: none;">GitHub Repository</a>
-    </div>
-    <p>© 2026 HookArmor. MIT Licensed Open Source Core. Built for developers who refuse to lose payments.</p>
-  </footer>
-
 </body>
 </html>

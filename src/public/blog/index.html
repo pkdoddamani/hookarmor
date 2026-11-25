@@ -7,12 +7,13 @@
   <meta name="description" content="Deep technical teardowns on webhook reliability, Stripe signature verification edge cases, SQS deduplication pitfalls, and serverless crash recovery.">
   <style>
     :root {
-      --bg: #070a12;
-      --bg-card: #0d1322;
-      --border: #1e293b;
-      --accent: #3b82f6;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      --bg: #06080d;
+      --bg-card: #0b0f17;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --accent: #60a5fa;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
       --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
@@ -119,11 +120,14 @@
 </head>
 <body>
   <nav>
-    <a href="/" class="logo">🛡️ HookArmor</a>
+    <a href="/" class="logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+      HookArmor
+    </a>
     <div class="nav-links">
       <a href="/">Product</a>
       <a href="/dashboard">Dashboard</a>
-      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank">GitHub</a>
+      <a href="https://github.com/pkdoddamani/hookarmor" target="_blank" rel="noopener">GitHub</a>
     </div>
   </nav>
 
@@ -163,7 +167,7 @@
     <a href="/blog/stripe-webhook-signature-verification-failed" class="post-card">
       <span class="post-tag">Security & Webhooks</span>
       <h2 class="post-title">Why Stripe Webhook Replays Fail Signature Verification (And The Re-Signing Fix)</h2>
-      <p class="post-summary">Why standard `stripe.webhooks.constructEvent()` throws "Timestamp outside the tolerance zone" on retried or replayed webhooks older than 300 seconds, and the cryptographic re-signing architecture required to solve it.</p>
+      <p class="post-summary">Why standard <code>stripe.webhooks.constructEvent()</code> throws "Timestamp outside the tolerance zone" on retried or replayed webhooks older than 300 seconds, and the cryptographic re-signing architecture required to solve it.</p>
       <div class="post-meta">
         <span>Sept 2026</span>
         <span>•</span>
