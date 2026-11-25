@@ -2619,6 +2619,109 @@ test('C4: API responses are not cacheable', async () => {
   }
 });
 
+// ---- Fourth audit pass (v1.4.6 hardening & website cleanup) ----
+
+test('D1: replay-all accepts 4500 event IDs (>100KB JSON) without HTTP 413', async () => {
+  const ha = await startHA();
+  try {
+    const ids = Array.from({ length: 4500 }, (_, i) => `evt_1795000000000_${String(i).padStart(12, '0')}`);
+    assert.ok(Buffer.byteLength(JSON.stringify({ ids })) > 100 * 1024, 'payload must exceed 100KB default limit');
+    const res = await fetch(`${ha.base}/api/events/replay-all`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ ids })
+    });
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.replayedCount, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('D2: masked customHeaders are restored on update, unknown masks refused, and secret/token headers masked', async () => {
+  const ha = await startHA();
+  const post = (body) => fetch(`${ha.base}/api/endpoints`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+  try {
+    const create = await post({
+      id: 'ep_d2',
+      name: 'd2',
+      targetUrl: 'https://example.com/hook',
+      customHeaders: {
+        'Authorization': 'Bearer real-secret-token',
+        'X-Webhook-Secret': 'wh_internal_sec',
+        'X-Custom-Tag': 'ok-value'
+      }
+    });
+    assert.strictEqual(create.status, 200);
+    const shown = await (await fetch(`${ha.base}/api/endpoints/ep_d2`)).json();
+    assert.strictEqual(shown.custom_headers['Authorization'], '••••••••');
+    assert.strictEqual(shown.custom_headers['X-Webhook-Secret'], '••••••••');
+    assert.strictEqual(shown.custom_headers['X-Custom-Tag'], 'ok-value');
+
+    // Submitting returned masked custom_headers back preserves stored secrets
+    const update = await post({
+      id: 'ep_d2',
+      targetUrl: 'https://example.com/hook2',
+      customHeaders: shown.custom_headers
+    });
+    assert.strictEqual(update.status, 200);
+    const stored = ha.storage.getEndpoint('ep_d2');
+    assert.strictEqual(stored.custom_headers['Authorization'], 'Bearer real-secret-token');
+    assert.strictEqual(stored.custom_headers['X-Webhook-Secret'], 'wh_internal_sec');
+
+    // Submitting placeholder for a header that does not exist in storage is refused
+    const forgedMask = await post({
+      id: 'ep_d2_new',
+      name: 'new',
+      targetUrl: 'https://example.com/hook',
+      customHeaders: { 'Authorization': '••••••••' }
+    });
+    assert.strictEqual(forgedMask.status, 400);
+  } finally {
+    await ha.close();
+  }
+});
+
+test('D3: netguard blocks deprecated IPv4-compatible, local NAT64, and 6to4 SSRF addresses', async () => {
+  const { classifyIp, checkUrl } = require('../src/netguard');
+  assert.strictEqual(classifyIp('::169.254.169.254'), 'metadata');
+  assert.strictEqual(classifyIp('::127.0.0.1'), 'private');
+  assert.strictEqual(classifyIp('64:ff9b:1::127.0.0.1'), 'private');
+  assert.strictEqual(classifyIp('2002:a9fe:a9fe::1'), 'metadata');
+  assert.strictEqual(classifyIp('2002:7f00:1::1'), 'private');
+  assert.strictEqual(checkUrl('http://[::169.254.169.254]/latest', false).ok, false);
+  assert.strictEqual(checkUrl('http://[2002:a9fe:a9fe::1]/latest', false).ok, false);
+  assert.strictEqual(checkUrl('http://[2002:7f00:1::1]/admin', true).ok, false);
+});
+
+test('D4: Stripe and Svix signature verification reject non-digit timestamps', async () => {
+  const Dispatcher = require('../src/dispatcher');
+  const body = JSON.stringify({ id: 'evt_d4' });
+  const good = stripeSig('whsec_d4', body);
+  const badStripe = Dispatcher.verifyIngressSignature('stripe', body, { 'stripe-signature': `t=${good.t}abc,v1=${good.v1}` }, 'whsec_d4');
+  assert.strictEqual(badStripe.valid, false);
+  const badSvix = Dispatcher.verifyIngressSignature('clerk/svix', body, {
+    'svix-id': 'msg_1',
+    'svix-timestamp': `${good.t}xyz`,
+    'svix-signature': 'v1,dummy'
+  }, 'whsec_d4');
+  assert.strictEqual(badSvix.valid, false);
+});
+
+test('D5: public HTML pages do not depend on external Google Fonts blocked by CSP', async () => {
+  const pubDir = path.join(__dirname, '..', 'src', 'public');
+  const htmlFiles = [
+    path.join(pubDir, 'landing.html'),
+    path.join(pubDir, 'index.html'),
+    ...fs.readdirSync(path.join(pubDir, 'blog')).filter((f) => f.endsWith('.html')).map((f) => path.join(pubDir, 'blog', f))
+  ];
+  for (const file of htmlFiles) {
+    const html = fs.readFileSync(file, 'utf8');
+    assert.ok(!html.includes('fonts.googleapis.com') && !html.includes('fonts.gstatic.com'), `${path.basename(file)} must not reference external Google Fonts blocked by CSP`);
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const c of cases) {

@@ -138,7 +138,7 @@ class Dispatcher extends EventEmitter {
           if (k === 'v1' && v) signatures.push(v);
         }
 
-        if (!timestampStr || signatures.length === 0) return { valid: false, reason: 'Malformed Stripe-Signature header' };
+        if (!timestampStr || !/^\d+$/.test(timestampStr) || signatures.length === 0) return { valid: false, reason: 'Malformed Stripe-Signature header' };
 
         const timestamp = parseInt(timestampStr, 10);
         const now = Math.floor(Date.now() / 1000);
@@ -190,8 +190,8 @@ class Dispatcher extends EventEmitter {
         const msgId = headers['svix-id'];
         const timestampStr = headers['svix-timestamp'];
         const sigHeader = headers['svix-signature'];
-        if (!msgId || !timestampStr || !sigHeader) {
-          return { valid: false, reason: 'Missing svix-id, svix-timestamp or svix-signature header' };
+        if (!msgId || !timestampStr || !/^\d+$/.test(timestampStr) || !sigHeader) {
+          return { valid: false, reason: 'Missing or invalid svix-id, svix-timestamp or svix-signature header' };
         }
 
         const timestamp = parseInt(timestampStr, 10);

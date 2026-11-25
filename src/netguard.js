@@ -25,6 +25,7 @@ function parseIPv6(ip) {
   const head = halves[0] ? halves[0].split(':') : [];
   const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
   const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0) return null;
   const groups = [...head, ...Array(fill).fill('0'), ...tail].map((g) => parseInt(g, 16));
   return groups.length === 8 && groups.every((g) => g >= 0 && g <= 0xffff) ? groups : null;
 }
@@ -50,15 +51,18 @@ function classifyIp(ip) {
   const g = parseIPv6(host);
   if (!g) return 'invalid';
   const v4 = [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff];
-  // IPv4-mapped (::ffff:0:0/96) and NAT64 (64:ff9b::/96) carry an IPv4 address
+  // IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96), NAT64 (64:ff9b::/96, 64:ff9b:1::/48), and 6to4 (2002::/16)
   if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return classifyIPv4(v4);
-  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return classifyIPv4(v4);
-  if (g[0] === 0xfd00 && g[1] === 0x0ec2 && g.slice(2, 7).every((x) => x === 0) && g[7] === 0x254) return 'metadata'; // AWS IMDS IPv6
   if (g.every((x) => x === 0)) return 'private'; // ::
   if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return 'private'; // ::1
+  if (g.slice(0, 6).every((x) => x === 0)) return classifyIPv4(v4);
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return 'private';
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return classifyIPv4(v4);
+  if (g[0] === 0x2002) return classifyIPv4([g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff]);
   if ((g[0] & 0xfe00) === 0xfc00) return 'private'; // fc00::/7 unique local
   if ((g[0] & 0xffc0) === 0xfe80) return 'private'; // fe80::/10 link-local
   if ((g[0] & 0xff00) === 0xff00) return 'private'; // multicast
+  if (g[0] === 0xfd00 && g[1] === 0x0ec2 && g.slice(2, 7).every((x) => x === 0) && g[7] === 0x254) return 'metadata'; // AWS IMDS IPv6
   return 'public';
 }
 

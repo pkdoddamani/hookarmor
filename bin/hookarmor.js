@@ -138,6 +138,81 @@ async function readJson(res) {
   return data;
 }
 
+// Seeds non-sensitive showcase events when starting in public HOOKARMOR_DEMO_MODE with an empty DB.
+function seedDemoSandbox(storage) {
+  if (storage.listEndpoints().length > 0) return;
+
+  storage.createEndpoint({
+    id: 'demo-stripe',
+    name: 'Stripe Billing API (Sandbox)',
+    targetUrl: 'https://api.example.com/webhooks/stripe',
+    provider: 'stripe',
+    secret: 'demo_stripe_sandbox_key',
+    autoRetry: 1
+  });
+  storage.createEndpoint({
+    id: 'demo-shopify',
+    name: 'Shopify Orders Sync (Sandbox)',
+    targetUrl: 'https://shop.example.com/hooks/orders',
+    provider: 'shopify',
+    secret: 'demo_shopify_sandbox_key',
+    autoRetry: 1
+  });
+
+  const sampleDelivered = storage.saveEvent({
+    id: 'evt_demo_stripe_paid_01',
+    endpointId: 'demo-stripe',
+    idempotencyKey: 'evt_3DemoPaid001',
+    provider: 'stripe',
+    eventType: 'invoice.payment_succeeded',
+    headers: { 'content-type': 'application/json', 'stripe-signature': 't=1794850000,v1=demo' },
+    rawBody: JSON.stringify({ id: 'evt_3DemoPaid001', type: 'invoice.payment_succeeded', amount_paid: 4900, currency: 'usd' }),
+    status: 'pending',
+    verified: true
+  });
+  storage.recordAttempt({ eventId: sampleDelivered.id, statusCode: 200, responseBody: '{"ok":true}', latencyMs: 8 });
+
+  const sampleDlq = storage.saveEvent({
+    id: 'evt_demo_stripe_retry_02',
+    endpointId: 'demo-stripe',
+    idempotencyKey: 'evt_3DemoRetry002',
+    provider: 'stripe',
+    eventType: 'customer.subscription.updated',
+    headers: { 'content-type': 'application/json', 'stripe-signature': 't=1794850060,v1=demo' },
+    rawBody: JSON.stringify({ id: 'evt_3DemoRetry002', type: 'customer.subscription.updated', plan: 'pro_monthly' }),
+    status: 'pending',
+    verified: true
+  });
+  storage.recordAttempt({
+    eventId: sampleDlq.id,
+    statusCode: 502,
+    responseBody: '502 Bad Gateway (Origin deploy rebooting)',
+    errorMessage: 'Destination returned HTTP 502',
+    latencyMs: 312,
+    nextRetryAt: new Date(Date.now() + 2 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  });
+
+  const sampleShopify = storage.saveEvent({
+    id: 'evt_demo_shopify_504_03',
+    endpointId: 'demo-shopify',
+    idempotencyKey: 'sh_demo_order_9912',
+    provider: 'shopify',
+    eventType: 'orders/create',
+    headers: { 'content-type': 'application/json', 'x-shopify-topic': 'orders/create' },
+    rawBody: JSON.stringify({ id: 9912001, total_price: '129.00', currency: 'USD', financial_status: 'paid' }),
+    status: 'pending',
+    verified: true
+  });
+  storage.recordAttempt({
+    eventId: sampleShopify.id,
+    statusCode: 504,
+    responseBody: 'Upstream DB pool timeout after 5000ms',
+    errorMessage: 'Destination returned HTTP 504',
+    latencyMs: 5002,
+    nextRetryAt: null
+  });
+}
+
 program
   .command('start')
   .description('Start HookArmor server with web dashboard and ingress proxy')
@@ -148,6 +223,10 @@ program
     const host = options.host;
     const { server, storage, dispatcher, worker, mockEnabled, instanceId } = startServerOrExit();
     setupGracefulShutdown(server, dispatcher, storage, instanceId, worker);
+
+    if (process.env.HOOKARMOR_DEMO_MODE === 'true') {
+      seedDemoSandbox(storage);
+    }
 
     // Ensure a default mock endpoint exists for first-time onboarding (local simulation only)
     if (mockEnabled && !storage.getEndpoint('demo-stripe')) {

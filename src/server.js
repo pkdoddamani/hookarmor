@@ -32,11 +32,21 @@ const SENSITIVE_INBOUND_HEADERS = new Set([
   'api-key'
 ]);
 
+const HEADER_MASK = '••••••••';
+
+function isSensitiveHeaderName(name) {
+  const lower = String(name || '').toLowerCase();
+  return SENSITIVE_INBOUND_HEADERS.has(lower) ||
+    lower.includes('secret') ||
+    lower.includes('token') ||
+    lower.includes('password');
+}
+
 function redactInboundHeaders(headers) {
   if (!headers || typeof headers !== 'object') return {};
   const clean = { ...headers };
   for (const name of Object.keys(clean)) {
-    if (SENSITIVE_INBOUND_HEADERS.has(name.toLowerCase())) {
+    if (isSensitiveHeaderName(name)) {
       clean[name] = '[REDACTED]';
     }
   }
@@ -167,6 +177,25 @@ function unmaskSubmittedUrl(submitted, stored, maskers) {
   return { error: 'contains the ******** placeholder shown by the API in place of a credential; send the real URL' };
 }
 
+// Restores masked custom header values when an endpoint update re-submits the API's placeholder.
+function unmaskCustomHeaders(submitted, stored) {
+  if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) return { headers: submitted };
+  const storedEntries = stored && typeof stored === 'object' ? Object.entries(stored) : [];
+  const restored = {};
+  for (const [name, val] of Object.entries(submitted)) {
+    if (val === HEADER_MASK) {
+      const match = storedEntries.find(([sk]) => sk.toLowerCase() === name.toLowerCase());
+      if (!match) {
+        return { error: `customHeaders: "${name}" contains the ${HEADER_MASK} placeholder shown by the API in place of a credential; send the real value` };
+      }
+      restored[name] = String(match[1]);
+    } else {
+      restored[name] = val;
+    }
+  }
+  return { headers: restored };
+}
+
 function maskAlertWebhookUrl(urlStr, isDemo = false) {
   if (!urlStr || typeof urlStr !== 'string') return urlStr;
   try {
@@ -199,8 +228,8 @@ function publicEndpoint(ep, isDemo = false) {
   let maskedHeaders = {};
   if (custom_headers && typeof custom_headers === 'object') {
     for (const [k, v] of Object.entries(custom_headers)) {
-      if (SENSITIVE_INBOUND_HEADERS.has(k.toLowerCase())) {
-        maskedHeaders[k] = '••••••••';
+      if (isSensitiveHeaderName(k)) {
+        maskedHeaders[k] = HEADER_MASK;
       } else {
         maskedHeaders[k] = v;
       }
@@ -830,8 +859,10 @@ function createServer(options = {}) {
     });
   });
 
-  // REST API: JSON Body Parser for Dashboard / Management
-  app.use(express.json({ limit: '100kb' }));
+  // REST API: JSON Body Parser for Dashboard / Management (allow larger ID batches on bulk replay)
+  const jsonDefault = express.json({ limit: '100kb' });
+  const jsonReplay = express.json({ limit: '512kb' });
+  app.use((req, res, next) => (req.path === '/api/events/replay-all' ? jsonReplay : jsonDefault)(req, res, next));
 
   app.use('/api', (req, res, next) => {
     // Public waitlist signup for the landing page (rate limited)
@@ -940,7 +971,12 @@ function createServer(options = {}) {
     if (cleanProvider === undefined && provider !== undefined) {
       return res.status(400).json({ error: `provider must be one of: generic, ${Dispatcher.KNOWN_PROVIDERS.join(', ')} (svix and clerk are accepted for clerk/svix)` });
     }
-    const headerCheck = validateCustomHeaders(customHeaders !== undefined ? customHeaders : custom_headers);
+    const rawCustomHeaders = customHeaders !== undefined ? customHeaders : custom_headers;
+    const headerRestore = unmaskCustomHeaders(rawCustomHeaders, existing && existing.custom_headers);
+    if (headerRestore.error) {
+      return res.status(400).json({ error: headerRestore.error });
+    }
+    const headerCheck = validateCustomHeaders(headerRestore.headers);
     if (headerCheck.error) {
       return res.status(400).json({ error: headerCheck.error });
     }

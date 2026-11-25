@@ -4,9 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookArmor - Webhook Dead-Letter Queue & Replay Sentinel</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-dark: #090d16;
@@ -22,8 +19,8 @@
       --accent-rose: #f43f5e;
       --accent-amber: #f59e0b;
       --accent-purple: #8b5cf6;
-      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
+      --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -466,7 +463,7 @@
     <a href="/" class="brand">
       <div class="brand-icon">🛡️</div>
       <div class="brand-text">
-        <h1>HookArmor <span class="brand-tag">v1.4.5 Live</span></h1>
+        <h1>HookArmor <span class="brand-tag">v1.4.6 Live</span></h1>
       </div>
     </a>
     <div class="nav-actions">
@@ -499,6 +496,9 @@
     </div>
 
     <!-- Webhook Disablement Sentinel Banner -->
+    <div id="demo-mode-banner" style="display: none; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.35); color: #bfdbfe; padding: 0.75rem 1.25rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem;">
+      👀 <strong>Public Read-Only Demo Sandbox</strong> — Inspect sample events, payload headers, and Sentinel failure streaks below. Never send real webhooks here; run <code class="code-mono">npx hookarmor start</code> locally for full simulator and 1-click replay controls.
+    </div>
     <div id="sentinel-alert-banner" style="display: none; background: rgba(220, 38, 38, 0.15); border: 1px solid rgba(220, 38, 38, 0.4); color: #fca5a5; padding: 0.85rem 1.25rem; border-radius: 8px; margin-bottom: 1.5rem; font-size: 0.88rem;"></div>
 
     <!-- Main Grid -->
@@ -694,6 +694,7 @@
     let currentFilter = null;
     let cachedEndpoints = [];
     let cachedLeads = [];
+    let isReadOnlyDemo = false;
     let ws = null;
 
     // Escape untrusted values (webhook payloads, headers, target responses, signups) before HTML insertion
@@ -733,14 +734,27 @@
 
     async function updateAdminUI() {
       const badgeArea = document.getElementById('admin-badge-area');
+      const demoBanner = document.getElementById('demo-mode-banner');
       if (!badgeArea) return;
       const key = getApiKey();
       if (!key) {
         badgeArea.innerHTML = `
           <button class="btn btn-secondary btn-sm" onclick="promptApiKey()" style="opacity: 0.8; font-size: 0.75rem; padding: 0.35rem 0.6rem;">🔑 Admin Login</button>
         `;
+        try {
+          const [epProbe, wlProbe] = await Promise.all([
+            fetch('/api/endpoints'),
+            fetch('/api/waitlist')
+          ]);
+          isReadOnlyDemo = epProbe.ok && wlProbe.status === 401;
+        } catch (_) {
+          isReadOnlyDemo = false;
+        }
+        if (demoBanner) demoBanner.style.display = isReadOnlyDemo ? 'block' : 'none';
         return;
       }
+      isReadOnlyDemo = false;
+      if (demoBanner) demoBanner.style.display = 'none';
 
       try {
         const res = await fetch('/api/waitlist', { headers: getAuthHeaders() });
@@ -1010,8 +1024,8 @@
               <tr>
                 <td colspan="7" style="text-align: center; color: #94a3b8; padding: 3rem;">
                   <div style="font-size: 1.1rem; font-weight: 600; color: #f1f5f9; margin-bottom: 0.5rem;">🔒 Operations Dashboard Protected</div>
-                  <div style="font-size: 0.85rem; max-width: 480px; margin: 0 auto 1.25rem;">
-                    This HookArmor instance is protected by a management API key. Click <strong>Admin Login</strong> above to enter your key and monitor live webhook deliveries.
+                  <div style="font-size: 0.85rem; max-width: 520px; margin: 0 auto 1.25rem;">
+                    This HookArmor instance is protected by a management API key. Click <strong>Admin Login</strong> above to sign in, or run <code class="code-mono">npx hookarmor start</code> locally for an open zero-config sandbox.
                   </div>
                   <button class="btn btn-primary btn-sm" onclick="promptApiKey()">🔑 Admin Login with API Key</button>
                 </td>
@@ -1279,11 +1293,15 @@
 
     async function updateMockConfig() {
       const statusCode = parseInt(document.getElementById('mock-status-select').value, 10);
-      await fetch('/mock/config', {
+      const res = await fetch('/mock/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ statusCode })
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(`Mock config unavailable (${res.status}): ${data.error || 'Admin login or local dev mode required.'}`);
+      }
     }
 
     function initWebSocket() {
