@@ -6,6 +6,11 @@
 [![Tests: Passing](https://img.shields.io/badge/Tests-119%20Passing-brightgreen.svg)](https://github.com/pkdoddamani/hookarmor/actions)
 [![Release: v1.4.6](https://img.shields.io/badge/Release-v1.4.6-blueviolet.svg)](https://github.com/pkdoddamani/hookarmor/releases/tag/v1.4.6)
 [![npm version](https://img.shields.io/npm/v/hookarmor.svg?color=cb3837)](https://www.npmjs.com/package/hookarmor)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-hookarmour.dev-10b981.svg)](https://hookarmour.dev/dashboard)
+
+![HookArmor Overview](./src/public/og-preview.png)
+
+**Try it locally in 5 seconds:** `npx hookarmor start` &nbsp;|&nbsp; **[Explore the Live Demo Dashboard](https://hookarmour.dev/dashboard)** &nbsp;|&nbsp; **[Read the Engineering Blog](https://hookarmour.dev/blog)**
 
 ---
 
