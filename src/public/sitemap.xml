@@ -13,6 +13,24 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://hookarmour.dev/blog/clerk-svix-webhook-signature-verification-failed</loc>
+    <lastmod>2026-11-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://hookarmour.dev/blog/github-webhook-x-hub-signature-256-failed</loc>
+    <lastmod>2026-11-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://hookarmour.dev/blog/express-raw-body-webhook-signature-failed</loc>
+    <lastmod>2026-11-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
     <loc>https://hookarmour.dev/blog/shopify-webhook-5s-timeout-deleted-endpoint</loc>
     <lastmod>2026-11-26</lastmod>
     <changefreq>monthly</changefreq>

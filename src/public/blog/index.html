@@ -136,8 +136,47 @@
     <div class="header-section">
       <span class="post-tag">Engineering Notes</span>
       <h1>Systems & Webhook Architecture</h1>
-      <p class="subtitle">Deep technical teardowns on Stripe signature mechanics, Shopify webhook timeouts, idempotency traps, and zero-loss distributed ingress.</p>
+      <p class="subtitle">Deep technical teardowns on Stripe signature mechanics, Shopify webhook timeouts, Clerk/Svix, GitHub deliveries, and zero-loss distributed ingress.</p>
     </div>
+
+    <a href="/blog/clerk-svix-webhook-signature-verification-failed" class="post-card">
+      <span class="post-tag">Clerk &amp; Svix</span>
+      <h2 class="post-title">Fixing Clerk &amp; Svix Webhook Signature Verification Errors (And Replay Timeouts)</h2>
+      <p class="post-summary">Why Clerk webhooks fail when whsec_ secrets aren't Base64-decoded, how svix-timestamp enforces a 300-second replay wall, and how to sync users safely across deploys.</p>
+      <div class="post-meta">
+        <span>Nov 26, 2026</span>
+        <span>•</span>
+        <span>5 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
+
+    <a href="/blog/github-webhook-x-hub-signature-256-failed" class="post-card">
+      <span class="post-tag">GitHub Apps &amp; CI</span>
+      <h2 class="post-title">GitHub Webhooks: X-Hub-Signature-256 Verification &amp; Why Failed Deliveries Aren't Retried</h2>
+      <p class="post-summary">GitHub enforces a strict 10-second timeout and never automatically retries failed webhooks. Learn how to fix timing-safe SHA-256 checks and add automatic retries.</p>
+      <div class="post-meta">
+        <span>Nov 26, 2026</span>
+        <span>•</span>
+        <span>5 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
+
+    <a href="/blog/express-raw-body-webhook-signature-failed" class="post-card">
+      <span class="post-tag">Node.js &amp; Express</span>
+      <h2 class="post-title">Fix &quot;No Signatures Found Matching the Expected Signature&quot; in Express.js Webhooks</h2>
+      <p class="post-summary">Why global express.json() corrupts Stripe, Shopify, Clerk, and GitHub webhook signatures — plus the exact express.raw() and verify hook fixes.</p>
+      <div class="post-meta">
+        <span>Nov 26, 2026</span>
+        <span>•</span>
+        <span>4 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
 
     <a href="/blog/shopify-webhook-5s-timeout-deleted-endpoint" class="post-card">
       <span class="post-tag">Shopify & Reliability</span>
