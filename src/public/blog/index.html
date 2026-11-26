@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookArmor Engineering Blog - Webhook Reliability & Architecture</title>
-  <meta name="description" content="Deep technical teardowns on webhook reliability, Stripe signature verification edge cases, SQS deduplication pitfalls, and serverless crash recovery.">
+  <meta name="description" content="Deep technical teardowns on webhook reliability, Shopify 5s timeouts, Next.js serverless deploys, Stripe signature verification edge cases, and SQS deduplication pitfalls.">
+  <link rel="canonical" href="https://hookarmour.dev/blog">
   <style>
     :root {
       --bg: #06080d;
@@ -135,8 +136,34 @@
     <div class="header-section">
       <span class="post-tag">Engineering Notes</span>
       <h1>Systems & Webhook Architecture</h1>
-      <p class="subtitle">Deep technical teardowns on Stripe signature mechanics, idempotency traps, and zero-loss distributed ingress.</p>
+      <p class="subtitle">Deep technical teardowns on Stripe signature mechanics, Shopify webhook timeouts, idempotency traps, and zero-loss distributed ingress.</p>
     </div>
+
+    <a href="/blog/shopify-webhook-5s-timeout-deleted-endpoint" class="post-card">
+      <span class="post-tag">Shopify & Reliability</span>
+      <h2 class="post-title">Shopify 5-Second Webhook Timeout & Auto-Deletion: How to Stop Losing Orders</h2>
+      <p class="post-summary">Why Shopify deletes API-registered webhook subscriptions after 8 failed attempts in 4 hours, why slow database/ERP routes break the 5-second budget, and how ingress buffering eliminates missed orders.</p>
+      <div class="post-meta">
+        <span>Nov 26, 2026</span>
+        <span>•</span>
+        <span>5 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
+
+    <a href="/blog/nextjs-vercel-stripe-webhook-timeouts-cold-starts" class="post-card">
+      <span class="post-tag">Next.js & Stripe</span>
+      <h2 class="post-title">Fixing Next.js & Stripe Webhook 502/504 Timeouts on Serverless Deploys</h2>
+      <p class="post-summary">Why raising serverless maxDuration does not stop Stripe or Shopify hang-ups during cold starts, database pool saturation, or deploy restarts — and how an ingress mailbox with fresh re-signing fixes it.</p>
+      <div class="post-meta">
+        <span>Nov 26, 2026</span>
+        <span>•</span>
+        <span>5 min read</span>
+        <span>•</span>
+        <span>By HookArmor Systems Team</span>
+      </div>
+    </a>
 
     <a href="/blog/hookarmor-v1-4-2-keepalive-concurrency-benchmarks" class="post-card">
       <span class="post-tag">Release & Performance</span>
